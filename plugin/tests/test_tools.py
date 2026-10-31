@@ -103,3 +103,51 @@ def test_skill_frontmatter(plugin):
     assert "name: qerlin-focusing" in head
     assert "description:" in head
     assert (plugin.get_references_dir() / "rixs-terminology.md").is_file()
+
+
+def test_singletons_resolved_on_main_thread(plugin, monkeypatch):
+    """Client/binder access goes through run_on_main_thread; only the request is threaded."""
+    import threading
+
+    import lightfall.claude._internal.threading as lf_threading
+
+    state = {"on_main": False, "get_client_on_main": [], "discover_thread": None}
+    main_ident = threading.get_ident()
+
+    def fake_run_on_main(func, *args):
+        state["on_main"] = True
+        try:
+            return func(*args)
+        finally:
+            state["on_main"] = False
+
+    class Client(FakeClient):
+        def discover(self, timeout_ms=2000):
+            state["discover_thread"] = threading.get_ident()
+            return {"app_version": "1", "dispersion_mev_per_px": 1.0}
+
+        def get_result(self, run_uid, timeout_ms=5000):
+            state["discover_thread"] = threading.get_ident()
+            return {"run_uid": run_uid}
+
+    client = Client(last_complete={"run_uid": "u9"})
+
+    def get_client():
+        state["get_client_on_main"].append(state["on_main"])
+        return client
+
+    def ensure():
+        assert state["on_main"]
+        return True
+
+    monkeypatch.setattr(lf_threading, "run_on_main_thread", fake_run_on_main)
+    monkeypatch.setattr(runtime, "get_client", get_client)
+    monkeypatch.setattr(runtime, "ensure_binder_enabled", ensure)
+
+    out = _payload(asyncio.run(_tool(plugin, "rixs_service_status")({})))
+    assert out["service_up"] is True
+    assert state["discover_thread"] != main_ident
+    out = _payload(asyncio.run(_tool(plugin, "get_focus_result")({})))
+    assert out == {"run_uid": "u9"}
+    assert state["discover_thread"] != main_ident
+    assert state["get_client_on_main"] and all(state["get_client_on_main"])

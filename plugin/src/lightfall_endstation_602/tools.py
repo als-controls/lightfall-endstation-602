@@ -1,7 +1,8 @@
 """Agent tools for the QERLIN closed-loop focusing workflow.
 
-Thin wrappers over the rixs-live service client. Blocking IPC requests run in a
-worker thread (``asyncio.to_thread``), never on the Qt main thread.
+Thin wrappers over the rixs-live service client. The runtime singletons (QObjects)
+are created and touched on the Qt main thread via ``run_on_main_thread``; only the
+blocking IPC request runs in a worker thread (``asyncio.to_thread``).
 """
 from __future__ import annotations
 
@@ -35,9 +36,20 @@ def _register_agent_dir() -> None:
         logger.warning(f"could not register QERLIN agent specs: {ex!r}")
 
 
-def _status() -> dict[str, Any]:
+def _on_main(func):
+    """Run ``func`` on the Qt main thread (the runtime singletons are QObjects)."""
+    from lightfall.claude._internal.threading import run_on_main_thread
+
+    return run_on_main_thread(func)
+
+
+def _prepare_status() -> tuple[Any, bool]:
+    """Main thread: enable the binder and fetch the client."""
     binder_enabled = runtime.ensure_binder_enabled()
-    reply = runtime.get_client().discover(2000)
+    return runtime.get_client(), binder_enabled
+
+
+def _status_payload(reply: dict | None, binder_enabled: bool) -> dict[str, Any]:
     if not reply:
         return {"service_up": False, "hint": _HINT}
     return {
@@ -48,14 +60,13 @@ def _status() -> dict[str, Any]:
     }
 
 
-def _focus_result(run_uid: str | None) -> tuple[str, dict | None]:
+def _prepare_result(run_uid: str | None) -> tuple[Any, str]:
+    """Main thread: fetch the client and resolve the default run uid."""
     client = runtime.get_client()
     uid = run_uid
     if not uid and client.last_complete:
         uid = client.last_complete.get("run_uid")
-    if not uid:
-        return "", None
-    return uid, client.get_result(uid)
+    return client, uid or ""
 
 
 class QerlinFocusingTools(ToolPlugin):
@@ -112,7 +123,9 @@ class QerlinFocusingTools(ToolPlugin):
         )
         async def rixs_service_status(args: dict) -> dict[str, Any]:
             try:
-                return mcp_result(await asyncio.to_thread(_status))
+                client, binder_enabled = _on_main(_prepare_status)
+                reply = await asyncio.to_thread(client.discover, 2000)
+                return mcp_result(_status_payload(reply, binder_enabled))
             except Exception as ex:  # noqa: BLE001 - surface to the agent
                 return mcp_error(f"rixs service status failed: {ex}")
 
@@ -139,7 +152,8 @@ class QerlinFocusingTools(ToolPlugin):
         async def get_focus_result(args: dict) -> dict[str, Any]:
             requested = (args or {}).get("run_uid") or None
             try:
-                uid, result = await asyncio.to_thread(_focus_result, requested)
+                client, uid = _on_main(lambda: _prepare_result(requested))
+                result = await asyncio.to_thread(client.get_result, uid) if uid else None
             except Exception as ex:  # noqa: BLE001 - surface to the agent
                 return mcp_error(f"get_focus_result failed: {ex}")
             if result is None:
