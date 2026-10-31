@@ -110,7 +110,8 @@ def _add_run(tiled, uid, frames, positions, **md_over):
 
 
 def _service(fake, tiled, **cfg_over):
-    cfg = AppConfig(**{"poll_interval_s": 0.01, **cfg_over})
+    cfg = AppConfig(**{"poll_interval_s": 0.01, "bind_lookup_timeout_s": 0.3,
+                       "drain_settle_s": 0.2, "drain_timeout_s": 2.0, **cfg_over})
     return RixsLiveService(cfg, nats_client=fake, tiled_connect=lambda url, key: tiled)
 
 
@@ -310,6 +311,7 @@ async def test_poll_error_publishes_error_and_unbinds(stub_score):
     await _until(lambda: fake.on(SUBJ_ERROR))
     assert "tiled connection dropped" in fake.on(SUBJ_ERROR)[-1]["error"]
     await _until(lambda: not svc.busy)
+    assert fake.on(SUBJ_STATUS)[-1]["state"] == "idle"
     await svc._handle_stop({"run_uid": "runA"}, None)  # now unbound: no-op
     assert len(fake.on(SUBJ_ERROR)) == 1 and not fake.on(SUBJ_COMPLETE)
 
@@ -389,3 +391,131 @@ async def test_status_progress(stub_score):
     await svc._handle_stop({"run_uid": "runA"}, None)
     assert fake.on(SUBJ_STATUS)[-1] == {"run_uid": "runA", "state": "idle",
                                         "frames_done": 3, "total": 3}
+
+
+# ------------------------------------------------- asynchronous writer (Lightfall)
+# Lightfall's ThreadedTiledWriter drains a queue on a background thread, so the
+# binder's bind/stop can overtake the docs they refer to.
+
+
+def _later(delay, fn):
+    async def run():
+        await asyncio.sleep(delay)
+        fn()
+    return asyncio.get_running_loop().create_task(run())
+
+
+async def test_bind_waits_for_run_to_appear(stub_score):
+    fake, tiled = FakeNats(), FakeTiled()
+    pos = [0.0, 0.5, 1.0]
+    staged = FakeTiled()
+    stream = _add_run(staged, "late", _parabola_frames(pos), pos)
+    svc = _service(fake, tiled, bind_lookup_timeout_s=5.0)
+    task = _later(0.4, lambda: tiled.runs.update(staged.runs))  # container lands late
+    await svc._handle_bind(_bind("late"), None)
+    await task
+    assert svc.busy and not fake.on(SUBJ_ERROR)
+    stream.visible = 3
+    await svc._handle_stop({"run_uid": "late"}, None)
+    (done,) = fake.on(SUBJ_COMPLETE)
+    assert len(done["points"]) == 3 and done["fit"]["ok"]
+
+
+async def test_bind_gives_up_after_lookup_timeout():
+    fake, tiled = FakeNats(), FakeTiled()
+    svc = _service(fake, tiled, bind_lookup_timeout_s=0.3)
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
+    await svc._handle_bind(_bind("never"), None)
+    assert 0.25 <= loop.time() - t0 < 2.0
+    (err,) = fake.on(SUBJ_ERROR)
+    assert err["run_uid"] == "never" and not svc.busy
+
+
+async def test_stop_during_bind_retry_is_deferred(stub_score):
+    fake, tiled = FakeNats(), FakeTiled()
+    pos = [0.0, 0.5, 1.0]
+    staged = FakeTiled()
+    stream = _add_run(staged, "late", _parabola_frames(pos), pos)
+    stream.visible = 3
+    svc = _service(fake, tiled, bind_lookup_timeout_s=5.0)
+    bind = asyncio.get_running_loop().create_task(svc._handle_bind(_bind("late"), None))
+    await asyncio.sleep(0.1)
+    await svc._handle_stop({"run_uid": "late"}, None)  # overtakes the run container
+    assert not fake.on(SUBJ_COMPLETE)
+    tiled.runs.update(staged.runs)
+    await bind
+    (done,) = fake.on(SUBJ_COMPLETE)
+    assert len(done["points"]) == 3 and not svc.busy
+
+
+async def test_frames_landing_after_stop_are_included(stub_score):
+    pos = [-0.8, -0.4, 0.0, 0.4, 0.8]
+    fake, tiled = FakeNats(), FakeTiled()
+    stream = _add_run(tiled, "runA", _parabola_frames(pos), pos)  # num_points = 5
+    svc = _service(fake, tiled, drain_settle_s=0.1, drain_timeout_s=5.0)
+    await svc._handle_bind(_bind("runA"), None)
+    stream.visible = 2
+    await _until(lambda: len(fake.on(SUBJ_FRAME)) == 2)
+    # Known total: the drain waits past drain_settle_s for the queued events.
+    task = _later(0.5, lambda: setattr(stream, "visible", 5))
+    await svc._handle_stop({"run_uid": "runA"}, None)
+    await task
+    (done,) = fake.on(SUBJ_COMPLETE)
+    assert [p["position"] for p in done["points"]] == pos
+    assert [m["seq_num"] for m in fake.on(SUBJ_FRAME)] == [1, 2, 3, 4, 5]
+
+
+async def test_late_frames_unknown_total_settle(stub_score):
+    pos = [-0.8, -0.4, 0.0, 0.4, 0.8]
+    fake, tiled = FakeNats(), FakeTiled()
+    stream = _add_run(tiled, "runA", _parabola_frames(pos), pos)
+    del tiled.runs["runA"].metadata["start"]["num_points"]
+    svc = _service(fake, tiled, drain_settle_s=1.0, drain_timeout_s=5.0)
+    await svc._handle_bind(_bind("runA"), None)
+    stream.visible = 2
+    await _until(lambda: len(fake.on(SUBJ_FRAME)) == 2)
+    task = _later(0.3, lambda: setattr(stream, "visible", 5))  # within the settle window
+    await svc._handle_stop({"run_uid": "runA"}, None)
+    await task
+    (done,) = fake.on(SUBJ_COMPLETE)
+    assert len(done["points"]) == 5
+
+
+async def test_drain_capped_when_frames_never_arrive(stub_score):
+    pos = [-0.8, -0.4, 0.0, 0.4, 0.8]
+    fake, tiled = FakeNats(), FakeTiled()
+    stream = _add_run(tiled, "runA", _parabola_frames(pos), pos)  # expects 5
+    stream.visible = 3
+    svc = _service(fake, tiled, drain_settle_s=0.1, drain_timeout_s=0.5)
+    await svc._handle_bind(_bind("runA"), None)
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
+    await svc._handle_stop({"run_uid": "runA"}, None)
+    assert 0.45 <= loop.time() - t0 < 3.0
+    (done,) = fake.on(SUBJ_COMPLETE)
+    assert len(done["points"]) == 3
+    assert fake.on(SUBJ_STATUS)[-1]["state"] == "idle"
+
+
+async def test_slow_backlog_not_cut_off_by_drain_cap(monkeypatch):
+    import time
+
+    def slow(img, d, e):
+        time.sleep(0.1)  # scoring a backlog takes longer than the drain cap
+        return FrameScore(float(np.mean(img)), None, None, True, None, None, None)
+
+    monkeypatch.setattr("rixs_live.service.score_frame", slow)
+    pos = [float(p) for p in np.linspace(-1.0, 1.0, 10)]
+    fake, tiled = FakeNats(), FakeTiled()
+    stream = _add_run(tiled, "runA", _parabola_frames(pos), pos)
+    svc = _service(fake, tiled, poll_interval_s=60.0, drain_timeout_s=0.3)
+    await svc._handle_bind(_bind("runA"), None)
+    await asyncio.sleep(0.05)
+    stream.visible = 5
+    # The rest lands while the first five are still being scored (0.5 s > cap 0.3 s).
+    task = _later(0.25, lambda: setattr(stream, "visible", 10))
+    await svc._handle_stop({"run_uid": "runA"}, None)
+    await task
+    (done,) = fake.on(SUBJ_COMPLETE)
+    assert len(done["points"]) == 10

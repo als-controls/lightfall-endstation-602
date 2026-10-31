@@ -6,10 +6,12 @@ the real fit. Scoring is ~1 s per frame on CPU, hence the generous timeout.
 """
 import asyncio
 import json
+import queue
 import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -96,9 +98,34 @@ def sim_model(monkeypatch):
     return state.model
 
 
-def _run_scan(writer_client, loop, nc, timings):
+class QueuedWriter:
+    """Stand-in for Lightfall's ThreadedTiledWriter: docs go through a queue that a
+    background thread drains, with a delay, so bind/stop overtake the docs."""
+
+    def __init__(self, writer, delay_s=0.3):
+        self._writer, self._delay = writer, delay_s
+        self._q: queue.Queue = queue.Queue()
+        self._thread = threading.Thread(target=self._drain, daemon=True)
+        self._thread.start()
+
+    def __call__(self, name, doc):
+        self._q.put((name, doc))
+
+    def _drain(self):
+        while (item := self._q.get()) is not None:
+            time.sleep(self._delay)
+            self._writer(*item)
+
+    def close(self):
+        self._q.put(None)
+        self._thread.join(timeout=60)
+
+
+def _run_scan(writer_client, loop, nc, timings, async_writer=False):
     """Blocking: run the scan in this (worker) thread; publish bind/stop over NATS."""
     tw = TiledWriter(writer_client, batch_size=1)
+    if async_writer:
+        tw = QueuedWriter(tw)
     RE = RunEngine({}, context_managers=[])  # not the main thread: no signal handlers
 
     def publish(subject, payload):
@@ -115,16 +142,22 @@ def _run_scan(writer_client, loop, nc, timings):
             timings["scan_done"] = time.monotonic()
             publish(SUBJ_STOP, {"run_uid": doc["run_start"]})
 
-    RE.subscribe(tw)
-    RE.subscribe(binder)
+    if async_writer:
+        RE.subscribe(binder)  # worst case: bind/stop go out before the writer sees the doc
+        RE.subscribe(tw)
+    else:
+        RE.subscribe(tw)
+        RE.subscribe(binder)
     sm3 = SimSM3Pitch(name="sm3_pitch")
     marana = SimMarana(name="marana", frame_shape=FRAME_SHAPE)
     md = {"rixs": build_rixs_md("marana_image", "sm3_pitch", FRAME_SHAPE, 850.0)}
     (uid,) = RE(bp.scan([marana], sm3, BEST - 1.0, BEST + 1.0, 7, md=md))
+    if async_writer:
+        tw.close()  # off the event loop: the service keeps working while this drains
     return uid
 
 
-async def _smoke(nats_url, tiled_app):
+async def _smoke(nats_url, tiled_app, async_writer):
     # One Context: a second Context.from_app on the same app runs the catalog on a
     # second event loop and corrupts its SQLite writes (FOREIGN KEY failures).
     with Context.from_app(tiled_app) as ctx:
@@ -150,7 +183,8 @@ async def _smoke(nats_url, tiled_app):
 
         loop = asyncio.get_running_loop()
         timings = {"t0": time.monotonic()}
-        uid = await loop.run_in_executor(None, _run_scan, writer_client, loop, nc, timings)
+        uid = await loop.run_in_executor(None, _run_scan, writer_client, loop, nc, timings,
+                                         async_writer)
 
         deadline = time.monotonic() + COMPLETE_TIMEOUT_S
         while time.monotonic() < deadline and not events["complete"] and not events["error"]:
@@ -172,5 +206,6 @@ async def _smoke(nats_url, tiled_app):
           f"fit optimum {done['fit']['optimal_position']:.3f} (best {BEST})")
 
 
-def test_e2e_smoke(nats_server, live_tiled_app, sim_model):
-    asyncio.run(_smoke(nats_server, live_tiled_app))
+@pytest.mark.parametrize("async_writer", [False, True], ids=["sync-writer", "queued-writer"])
+def test_e2e_smoke(nats_server, live_tiled_app, sim_model, async_writer):
+    asyncio.run(_smoke(nats_server, live_tiled_app, async_writer))

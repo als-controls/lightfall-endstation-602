@@ -29,6 +29,11 @@ class AppConfig(BaseModel):
     dispersion_mev_per_px: float = 0.0
     # Completed scan payloads kept for SUBJ_RESULT requests (oldest evicted).
     keep_results: int = 20
+    # Lightfall's writer is asynchronous (a queue drained by a thread), so a bind can
+    # arrive before the run exists in Tiled and a stop before the last events land.
+    bind_lookup_timeout_s: float = 10.0  # keep retrying the run lookup this long
+    drain_settle_s: float = 2.0  # total unknown: drain ends after this long with no new rows
+    drain_timeout_s: float = 15.0  # cap on drain time spent waiting with no new rows
 
 
 def load_config(path: str | None = None, *, nats_url: str | None = None,

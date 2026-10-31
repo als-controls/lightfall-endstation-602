@@ -37,6 +37,8 @@ class RixsLiveService:
         # dict: run_uid, reader, info, total, next, frames (per-frame payloads), stop (Event)
         self._current: dict | None = None
         self.results: OrderedDict[str, dict] = OrderedDict()
+        self._binding: set[str] = set()  # run uids whose bind is still in progress
+        self._pending_stops: set[str] = set()  # stops that arrived during their bind
 
     @property
     def busy(self) -> bool:
@@ -102,8 +104,37 @@ class RixsLiveService:
             "run_uid": cur["run_uid"], "state": state,
             "frames_done": len(cur["frames"]), "total": cur["total"]})
 
+    async def _lookup_run(self, tiled_client, run_uid: str):
+        """``tiled_client[run_uid]``, retried with backoff while it raises KeyError.
+
+        An asynchronous writer may not have created the run container yet when the
+        bind arrives; give it up to ``bind_lookup_timeout_s``.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._config.bind_lookup_timeout_s
+        delay = 0.05
+        while True:
+            try:
+                return await loop.run_in_executor(None, tiled_client.__getitem__, run_uid)
+            except KeyError:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    raise
+                await asyncio.sleep(min(delay, remaining))
+                delay = min(delay * 2, 0.5)
+
     async def _handle_bind(self, data: dict, msg) -> None:
         run_uid = data.get("run_uid", "")
+        self._binding.add(run_uid)
+        try:
+            await self._bind(run_uid, data)
+        finally:
+            self._binding.discard(run_uid)
+        if run_uid in self._pending_stops:
+            self._pending_stops.discard(run_uid)
+            await self._handle_stop({"run_uid": run_uid}, None)
+
+    async def _bind(self, run_uid: str, data: dict) -> None:
         try:
             version = data.get("contract_version", CONTRACT_VERSION)
             if version != CONTRACT_VERSION:
@@ -112,7 +143,7 @@ class RixsLiveService:
             url, key = self._resolve_credentials(data)
             loop = asyncio.get_running_loop()
             tiled_client = await loop.run_in_executor(None, self._tiled_connect, url, key)
-            run = await loop.run_in_executor(None, tiled_client.__getitem__, run_uid)
+            run = await self._lookup_run(tiled_client, run_uid)
             start = run.metadata.get("start", {})
             info = parse_start_rixs(run_uid, start)
             if info is None:
@@ -176,6 +207,7 @@ class RixsLiveService:
                                          {"run_uid": cur["run_uid"], "error": str(ex)})
                 if self._current is cur:
                     self._current = None
+                    await self._status(cur, "idle")
                 return
             try:
                 await asyncio.wait_for(cur["stop"].wait(),
@@ -193,6 +225,43 @@ class RixsLiveService:
                 logger.exception("poll task died")
             self._poll_task = None
         self._current = None
+
+    async def _drain(self, cur: dict) -> None:
+        """Score the frames the poll loop has not seen, including late ones.
+
+        With an asynchronous writer the last events may land after the stop. Keep
+        re-polling until ``total`` frames (start doc ``num_points``) have been read
+        when known, else until no new rows appeared for ``drain_settle_s``. The cap,
+        ``drain_timeout_s``, counts only time spent *waiting without new rows*:
+        scoring a backlog (~1 s/frame) never cuts off frames that are already there.
+        Then complete with whatever arrived.
+        """
+        loop = asyncio.get_running_loop()
+        cfg = self._config
+        total = cur["total"]
+        known = isinstance(total, int) and total > 0
+        interval = min(cfg.poll_interval_s, 0.1)
+        idle = 0.0  # waiting time since the last new row
+        while True:
+            t = loop.time()
+            try:
+                n_new = await self._score_new(cur, drain=True)
+            except KeyError:
+                n_new = 0  # stream not created (yet)
+            if known and len(cur["frames"]) >= total:
+                return
+            if n_new:
+                idle = 0.0
+                continue
+            idle += loop.time() - t
+            if not known and idle >= cfg.drain_settle_s:
+                return
+            if idle >= cfg.drain_timeout_s:
+                logger.warning(f"drain for {cur['run_uid']} gave up waiting with "
+                               f"{len(cur['frames'])}/{total} frames")
+                return
+            await asyncio.sleep(interval)
+            idle += interval
 
     def _complete_payload(self, cur: dict) -> dict:
         frames = cur["frames"]
@@ -218,6 +287,10 @@ class RixsLiveService:
     async def _handle_stop(self, data: dict, msg) -> None:
         run_uid = data.get("run_uid", "")
         cur = self._current
+        if run_uid in self._binding and (cur is None or cur["run_uid"] != run_uid):
+            logger.info(f"stop for {run_uid} arrived during its bind; deferred")
+            self._pending_stops.add(run_uid)
+            return
         if cur is None or cur["run_uid"] != run_uid:
             logger.info(f"stop for unknown/unbound run {run_uid}; ignoring")
             return
@@ -228,10 +301,7 @@ class RixsLiveService:
                 self._poll_task = None
             if self._current is not cur:  # poll failed (error already published)
                 return
-            try:
-                await self._score_new(cur, drain=True)  # drain frames the poll loop has not seen
-            except KeyError:
-                pass  # no frames were ever written
+            await self._drain(cur)
             payload = self._complete_payload(cur)
             self._store(run_uid, payload)
             await self._nats.publish(SUBJ_COMPLETE, payload)
