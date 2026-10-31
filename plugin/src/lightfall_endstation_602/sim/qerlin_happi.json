@@ -1,0 +1,47 @@
+{
+    "sm3_pitch": {
+        "_id": "sm3_pitch",
+        "active": true,
+        "args": [],
+        "creation": "Fri Oct 30 00:00:00 2026",
+        "device_class": "lightfall_endstation_602.sim.devices.SimSM3Pitch",
+        "documentation": null,
+        "kwargs": {
+            "name": "{{name}}"
+        },
+        "last_edit": "Fri Oct 30 00:00:00 2026",
+        "name": "sm3_pitch",
+        "prefix": "QERLIN:SIM:sm3_pitch",
+        "type": "OphydItem"
+    },
+    "mono_energy": {
+        "_id": "mono_energy",
+        "active": true,
+        "args": [],
+        "creation": "Fri Oct 30 00:00:00 2026",
+        "device_class": "lightfall_endstation_602.sim.devices.SimMonoEnergy",
+        "documentation": null,
+        "kwargs": {
+            "name": "{{name}}"
+        },
+        "last_edit": "Fri Oct 30 00:00:00 2026",
+        "name": "mono_energy",
+        "prefix": "QERLIN:SIM:mono_energy",
+        "type": "OphydItem"
+    },
+    "marana": {
+        "_id": "marana",
+        "active": true,
+        "args": [],
+        "creation": "Fri Oct 30 00:00:00 2026",
+        "device_class": "lightfall_endstation_602.sim.devices.SimMarana",
+        "documentation": null,
+        "kwargs": {
+            "name": "{{name}}"
+        },
+        "last_edit": "Fri Oct 30 00:00:00 2026",
+        "name": "marana",
+        "prefix": "QERLIN:SIM:marana",
+        "type": "OphydItem"
+    }
+}
