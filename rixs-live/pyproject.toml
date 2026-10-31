@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[project]
+name = "rixs-live"
+description = "Headless RIXS analysis service for ALS 6.0.2: NATS-bound, Tiled-fed, wraps QERLIN"
+requires-python = ">=3.11"
+dynamic = ["version"]
+dependencies = [
+    "numpy",
+    "nats-py>=2.1",
+    "tiled[client]",
+    "bluesky-tiled-plugins",
+    "pydantic>=2",
+    "click",
+    "pyyaml",
+    "loguru",
+    "mrixs-super-app",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-asyncio",
+    "tiled[server]",
+    "adbc-driver-sqlite",
+    "nats-server-bin",
+    "ophyd",
+    "bluesky",
+]
+
+[project.scripts]
+rixs-live = "rixs_live.cli:main"
+
+[tool.hatch.version]
+source = "vcs"
+raw-options = { root = ".." }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rixs_live"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
