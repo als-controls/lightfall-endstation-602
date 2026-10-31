@@ -256,6 +256,56 @@ async def test_result_request_returns_stored(stub_score):
     assert fake.on("r2") == [{"error": "unknown run ghost"}]
 
 
+async def test_result_request_pending_while_bound_and_draining(stub_score):
+    """A result request for the bound run says pending (not unknown) until complete."""
+    pos = [-0.8, -0.4, 0.0, 0.4, 0.8]
+    fake, tiled = FakeNats(), FakeTiled()
+    stream = _add_run(tiled, "runA", _parabola_frames(pos), pos)  # num_points = 5
+    svc = _service(fake, tiled, drain_settle_s=0.1, drain_timeout_s=5.0)
+    await svc._register_subscriptions()
+    ask = fake.subscriptions[SUBJ_RESULT]
+    await svc._handle_bind(_bind("runA"), None)
+    stream.visible = 2
+    await _until(lambda: len(fake.on(SUBJ_FRAME)) == 2)
+
+    await ask({"run_uid": "runA"}, Msg("bound"))
+    assert fake.on("bound") == [{"pending": True, "run_uid": "runA",
+                                 "frames_done": 2, "total": 5}]
+
+    # Drain: the stop is waiting for the 3 queued frames.
+    stop = asyncio.get_running_loop().create_task(
+        svc._handle_stop({"run_uid": "runA"}, None))
+    await asyncio.sleep(0.2)
+    assert not stop.done()
+    await ask({"run_uid": "runA"}, Msg("draining"))
+    (reply,) = fake.on("draining")
+    assert reply["pending"] is True and reply["total"] == 5
+    stream.visible = 5
+    await stop
+    (done,) = fake.on(SUBJ_COMPLETE)
+    await ask({"run_uid": "runA"}, Msg("after"))
+    assert fake.on("after") == [done]
+    await ask({"run_uid": "ghost"}, Msg("ghost"))
+    assert fake.on("ghost") == [{"error": "unknown run ghost"}]
+
+
+async def test_result_request_pending_during_bind(stub_score):
+    fake, tiled = FakeNats(), FakeTiled()
+    pos = [0.0, 0.5, 1.0]
+    staged = FakeTiled()
+    _add_run(staged, "late", _parabola_frames(pos), pos)
+    svc = _service(fake, tiled, bind_lookup_timeout_s=5.0)
+    await svc._register_subscriptions()
+    bind = asyncio.get_running_loop().create_task(svc._handle_bind(_bind("late"), None))
+    await asyncio.sleep(0.1)  # bind is retrying the Tiled lookup
+    await fake.subscriptions[SUBJ_RESULT]({"run_uid": "late"}, Msg("r"))
+    assert fake.on("r") == [{"pending": True, "run_uid": "late",
+                             "frames_done": 0, "total": None}]
+    tiled.runs.update(staged.runs)
+    await bind
+    await svc.wait_idle()
+
+
 async def test_results_capped_oldest_evicted(stub_score):
     fake, tiled = FakeNats(), FakeTiled()
     svc = _service(fake, tiled, keep_results=2)

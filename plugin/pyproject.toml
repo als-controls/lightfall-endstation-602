@@ -9,6 +9,7 @@ requires-python = ">=3.11"
 dynamic = ["version"]
 dependencies = [
     "lightfall",
+    "loguru",
     "numpy",
     "ophyd>=1.6",
     "bluesky>=1.8",

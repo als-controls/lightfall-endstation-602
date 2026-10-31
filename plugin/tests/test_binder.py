@@ -41,8 +41,10 @@ def test_binder_bind_and_stop(fake_ipc):
     assert fake_ipc.published == [(c.SUBJ_BIND, {
         "run_uid": "runX", "tiled_url": "http://t", "tiled_api_key": "key",
         "lightfall_prefix": "als.602", "contract_version": c.CONTRACT_VERSION})]
+    assert b._client.last_bound_uid == "runX"
     cb("stop", {"run_start": "runX"})
     assert (c.SUBJ_STOP, {"run_uid": "runX"}) in fake_ipc.published
+    assert b._client.last_bound_uid == "runX"  # kept after stop: the result comes later
 
 
 def test_binder_ignores_non_rixs_start(fake_ipc):
@@ -52,6 +54,7 @@ def test_binder_ignores_non_rixs_start(fake_ipc):
     cb("start", {"uid": "plain", "plan_name": "count"})
     cb("stop", {"run_start": "plain"})
     assert fake_ipc.published == []
+    assert b._client.last_bound_uid is None
 
 
 def test_callback_exceptions_swallowed(fake_ipc):

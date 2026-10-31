@@ -85,6 +85,7 @@ class RixsRunBinder:
                     uid, tiled_url=tiled_url, tiled_api_key=api_key,
                     lightfall_prefix=self._get_prefix())
                 self._bound_uid = uid
+                self._client.last_bound_uid = uid
             elif name == "stop":
                 uid = doc.get("run_start") or self._bound_uid
                 if uid and uid == self._bound_uid:

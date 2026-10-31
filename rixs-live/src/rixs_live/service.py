@@ -86,8 +86,20 @@ class RixsLiveService:
     async def _handle_result(self, data: dict, msg) -> None:
         run_uid = data.get("run_uid", "")
         result = self.results.get(run_uid)
+        if result is None:
+            result = self._pending_reply(run_uid)
         await self._nats.reply(msg, result if result is not None
                                else {"error": f"unknown run {run_uid}"})
+
+    def _pending_reply(self, run_uid: str) -> dict | None:
+        """``{"pending": True, ...}`` while ``run_uid`` is binding, bound or draining."""
+        cur = self._current
+        if run_uid and cur is not None and cur["run_uid"] == run_uid:
+            return {"pending": True, "run_uid": run_uid,
+                    "frames_done": len(cur["frames"]), "total": cur["total"]}
+        if run_uid and (run_uid in self._binding or run_uid in self._pending_stops):
+            return {"pending": True, "run_uid": run_uid, "frames_done": 0, "total": None}
+        return None
 
     def _resolve_credentials(self, data: dict) -> tuple[str, str | None]:
         url = data.get("tiled_url") or ""

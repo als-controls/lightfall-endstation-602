@@ -150,9 +150,35 @@ def test_preview_bad_payload_is_ignored(panel):
 def test_status_and_error(panel):
     panel.test_ipc.emit(c.SUBJ_STATUS, {"run_uid": "u", "state": "scoring",
                                         "frames_done": 2, "total": 5})
-    assert "scoring" in panel._status_label.text() and "2/5" in panel._status_label.text()
+    assert panel._state_label.text() == "service: scoring 2/5"
+    panel.test_ipc.emit(c.SUBJ_STATUS, {"run_uid": "u", "state": "binding",
+                                        "frames_done": 0, "total": None})
+    assert panel._state_label.text() == "service: binding 0/?"
     panel.test_ipc.emit(c.SUBJ_ERROR, {"run_uid": "u", "error": "boom"})
     assert "boom" in panel._status_label.text()
+
+
+def test_status_does_not_overwrite_frame_or_fit_text(panel):
+    panel.test_ipc.emit(c.SUBJ_FRAME, _frame(0.5, None, valid=False, reason="no peak found"))
+    panel.test_ipc.emit(c.SUBJ_STATUS, {"run_uid": "u", "state": "scoring",
+                                        "frames_done": 1, "total": 7})
+    assert "no fit: no peak found" in panel._status_label.text()
+    assert "scoring 1/7" in panel._state_label.text()
+    panel.test_ipc.emit(c.SUBJ_COMPLETE, {
+        "run_uid": "u", "motor_field": "sm3_pitch", "points": [],
+        "fit": {"ok": False, "optimal_position": None, "coeffs": None,
+                "reason": "fewer than 3 valid points"},
+        "best_measured": None})
+    panel.test_ipc.emit(c.SUBJ_STATUS, {"run_uid": "u", "state": "idle",
+                                        "frames_done": 1, "total": 7})
+    assert "fewer than 3 valid points" in panel._status_label.text()
+    assert panel._state_label.text() == "service: idle"
+
+
+def test_pitch_axis_has_no_si_prefix(panel):
+    axis = panel._plot.getPlotItem().getAxis("bottom")
+    assert "mrad" in axis.labelText
+    assert "mmrad" not in axis.labelString()
 
 
 def test_close_keeps_binder_enabled(panel):

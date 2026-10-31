@@ -29,10 +29,15 @@ arguments are device names, `start`/`stop` are SM3 pitch in mrad, `exposure_s` i
    agent turns against scan points. A small `num` (5-9) leaves refinement to you; a large one
    gives a dense scan. At least 5 points are advisable (the fit needs 3 valid points and a
    concave-up curve).
-3. **Read the fit.** Wait for the run to finish, then call `get_focus_result`.
+3. **Read the fit.** Wait for the run to finish with `lightfall_wait_for_idle`, then call
+   `get_focus_result`, passing `run_uid` when the plan-run or wait tool gave you the run's
+   uid (otherwise it defaults to the last bound focus scan). The service finishes scoring
+   a few seconds after the RunEngine goes idle; `get_focus_result` waits for that analysis
+   (up to `wait_s`, default 60 s) rather than returning an older run's fit. If it reports
+   the analysis is still running, call it again; do not fall back to an earlier result.
    - If `fit.ok`: run a fine scan of +-3x the coarse step around `fit.optimal_position`
-     (clamped to +-3 mrad), again with an explicit `reason`, then call `get_focus_result`
-     on the new run.
+     (clamped to +-3 mrad), again with an explicit `reason`, then wait for idle and
+     call `get_focus_result` on the new run.
    - If not ok: say why, quoting `fit.reason` verbatim ("fewer than 3 valid points",
      "curve not concave-up (no minimum)", "optimum outside scanned range"). Then widen the
      range, or re-center a new scan around `best_measured.position`, and repeat. Stop and ask
@@ -40,8 +45,8 @@ arguments are device names, `start`/`stop` are SM3 pitch in mrad, `exposure_s` i
 4. **Move.** With the device tools, move `sm3_pitch` to the final optimum (the fine-scan
    `fit.optimal_position` if ok). Never move outside +-3 mrad.
 5. **Confirm.** Run one more exposure with `num=1` and `start == stop ==` the optimum, with
-   an explicit `reason`. Read it with `get_focus_result`; its single point is the confirming
-   FWHM (the fit will not be ok for one point, which is expected).
+   an explicit `reason`. Wait for idle and read it with `get_focus_result`; its single
+   point is the confirming FWHM (the fit will not be ok for one point, which is expected).
 6. **Report.** Give the optimum pitch (mrad), the confirming FWHM in px and meV, and
    resolving power R. If `dispersion_mev_per_px` is 0 or unknown, or the mono energy is
    missing, report FWHM in px only and say plainly that resolving power is unavailable;

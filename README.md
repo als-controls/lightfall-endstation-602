@@ -88,6 +88,10 @@ Two scripts live outside git under
    `rixs-live/.venv/Scripts/rixs-live run --nats-url nats://127.0.0.1:4222 --lightfall-prefix <ipc_topic_prefix> --dispersion 2.5`
    Tiled is whatever Lightfall is configured for: the plugin sends the Tiled
    URL and API key to the service in each `rixs.run.bind` message.
+   **Warning:** `rixs.run.bind` is a public subject, so the Tiled API key in it
+   is readable by anyone on the broker. That is acceptable on a local demo
+   broker only. Before using a shared or facility broker, drop the key from the
+   bind and rely on the service's private auth handshake for Tiled credentials.
    An empty `app_version` in `rixs_service_status` is expected for an editable install.
 3. **Backend.** Start Lightfall and enable the `qerlin_sim` device backend
    (Settings -> Devices; the preference is `device_plugin_qerlin_sim_enabled`). Check that `sm3_pitch`, `mono_energy` and `marana`
@@ -103,3 +107,7 @@ Two scripts live outside git under
 6. **Agent.** Open the "qerlin" agent in the assistant panel and ask it to
    focus the spectrometer. It checks `rixs_service_status`, runs focus scans,
    reads `get_focus_result`, and moves SM3 to the optimum.
+
+An aborted or rejected scan still gets a (failed or partial) result, but about
+15 s late: the service keeps waiting for the frames the start document
+promised until the drain cap (`drain_timeout_s`) runs out.

@@ -94,7 +94,8 @@ class QerlinFocusPanel(BasePanel):
         row = QHBoxLayout()
 
         self._plot = pg.PlotWidget()
-        self._plot.setLabel("bottom", "SM3 pitch", units="mrad")
+        # Unit in the label text: units="mrad" would get pyqtgraph's SI prefix ("mmrad").
+        self._plot.setLabel("bottom", "SM3 pitch (mrad)")
         self._plot.setLabel("left", "FWHM", units="px")
         self._scatter = pg.ScatterPlotItem(size=8)
         self._fit_curve = pg.PlotDataItem([], [], pen=pg.series_pen(1))
@@ -116,9 +117,15 @@ class QerlinFocusPanel(BasePanel):
 
         row.addWidget(self._plot, 1)
         row.addWidget(self._image_view, 1)
+        # Two labels: service state ("scoring 3/7") arrives after every batch and
+        # must not overwrite the frame/fit message the user is reading.
         self._status_label = QLabel("idle")
+        self._state_label = QLabel("service: idle")
+        status_row = QHBoxLayout()
+        status_row.addWidget(self._status_label, 1)
+        status_row.addWidget(self._state_label)
         outer.addLayout(row)
-        outer.addWidget(self._status_label)
+        outer.addLayout(status_row)
         self._layout.addWidget(content)
 
     def _retry_enable(self) -> None:
@@ -234,8 +241,14 @@ class QerlinFocusPanel(BasePanel):
                 f"scan complete, no fit: {fit.get('reason') or 'unknown'}")
 
     def _on_status(self, data: dict) -> None:
-        self._status_label.setText(
-            f"{data.get('state', '?')} - {data.get('frames_done', 0)}/{data.get('total', 0)}")
+        state = data.get("state") or "?"
+        if state == "idle":
+            self._state_label.setText("service: idle")
+            return
+        total = data.get("total")
+        done = data.get("frames_done")
+        self._state_label.setText(
+            f"service: {state} {0 if done is None else done}/{'?' if total is None else total}")
 
     def _on_error(self, data: dict) -> None:
         self._status_label.setText(f"error: {data.get('error', '')}")

@@ -51,6 +51,15 @@ def test_get_result_ok(fake_ipc):
     assert fake_ipc.requests == [(c.SUBJ_RESULT, {"run_uid": "u"})]
 
 
+def test_get_result_pending_passthrough(fake_ipc):
+    pending = {"pending": True, "run_uid": "u", "frames_done": 3, "total": 7}
+    fake_ipc.replies[c.SUBJ_RESULT] = pending
+    cl = RixsServiceClient(ipc=fake_ipc)
+    assert cl.last_bound_uid is None
+    r = cl.get_result("u")
+    assert r == pending and r.get("pending") is True
+
+
 def test_get_result_timeout_returns_none(fake_ipc):
     fake_ipc.request_exc = TimeoutError()
     assert RixsServiceClient(ipc=fake_ipc).get_result("u") is None

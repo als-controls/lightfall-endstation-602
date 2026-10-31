@@ -9,10 +9,11 @@ from lightfall_endstation_602.tools import QerlinFocusingTools
 
 
 class FakeClient:
-    def __init__(self, discover=None, results=None, last_complete=None):
+    def __init__(self, discover=None, results=None, last_complete=None, last_bound_uid=None):
         self._discover = discover
         self._results = results or {}
         self.last_complete = last_complete
+        self.last_bound_uid = last_bound_uid
         self.asked = []
 
     def discover(self, timeout_ms=2000):
@@ -20,7 +21,10 @@ class FakeClient:
 
     def get_result(self, run_uid, timeout_ms=5000):
         self.asked.append(run_uid)
-        return self._results.get(run_uid)
+        r = self._results.get(run_uid)
+        if isinstance(r, list):  # a sequence of replies, last one repeats
+            return r.pop(0) if len(r) > 1 else r[0]
+        return r
 
 
 @pytest.fixture
@@ -170,3 +174,48 @@ def test_get_focus_result_missing_mentions_unbound_binder(plugin, monkeypatch):
     res = asyncio.run(_tool(plugin, "get_focus_result")({"run_uid": "nope"}))
     assert res.get("is_error") is True
     assert "binder" in res["content"][0]["text"]
+
+
+PENDING = {"pending": True, "run_uid": "new", "frames_done": 3, "total": 7}
+
+
+def test_get_focus_result_defaults_to_last_bound_not_last_complete(plugin, monkeypatch):
+    """The fit for the scan just run lands after idle; never hand back the previous one."""
+    monkeypatch.setattr(tools, "POLL_INTERVAL_S", 0.001)
+    new = {"run_uid": "new", "fit": {"ok": True}}
+    client = FakeClient(results={"old": {"run_uid": "old"}, "new": new},
+                        last_complete={"run_uid": "old"}, last_bound_uid="new")
+    monkeypatch.setattr(runtime, "get_client", lambda: client)
+    out = _payload(asyncio.run(_tool(plugin, "get_focus_result")({})))
+    assert out == new
+    assert client.asked == ["new"]
+
+
+def test_get_focus_result_polls_pending_until_complete(plugin, monkeypatch):
+    monkeypatch.setattr(tools, "POLL_INTERVAL_S", 0.001)
+    done = {"run_uid": "new", "fit": {"ok": True, "optimal_position": 0.1}}
+    client = FakeClient(results={"new": [dict(PENDING), dict(PENDING), done]},
+                        last_complete={"run_uid": "old"}, last_bound_uid="new")
+    monkeypatch.setattr(runtime, "get_client", lambda: client)
+    out = _payload(asyncio.run(_tool(plugin, "get_focus_result")({"wait_s": 5})))
+    assert out == done
+    assert client.asked == ["new", "new", "new"]
+
+
+def test_get_focus_result_pending_timeout_errors(plugin, monkeypatch):
+    monkeypatch.setattr(tools, "POLL_INTERVAL_S", 0.01)
+    client = FakeClient(results={"new": [dict(PENDING, total=None)]}, last_bound_uid="new")
+    monkeypatch.setattr(runtime, "get_client", lambda: client)
+    res = asyncio.run(_tool(plugin, "get_focus_result")({"wait_s": 0.05}))
+    assert res.get("is_error") is True
+    text = res["content"][0]["text"]
+    assert "still running" in text and "3/? frames" in text
+    assert len(client.asked) >= 2
+
+
+def test_wait_s_clamped():
+    assert tools._wait_s(None) == tools.WAIT_DEFAULT_S
+    assert tools._wait_s("x") == tools.WAIT_DEFAULT_S
+    assert tools._wait_s(-5) == 0.0
+    assert tools._wait_s(10_000) == tools.WAIT_MAX_S
+    assert tools._wait_s(float("nan")) == tools.WAIT_DEFAULT_S

@@ -25,6 +25,8 @@ class RixsServiceClient(QObject):
                 ipc = None
         self._ipc = ipc
         self.last_complete: dict | None = None
+        # Run uid of the most recent rixs.run.bind (set by RixsRunBinder).
+        self.last_bound_uid: str | None = None
         if self._ipc is not None:
             self._ipc.subscribe(c.SUBJ_FRAME, self._on_frame)
             self._ipc.subscribe(c.SUBJ_COMPLETE, self._on_complete)
@@ -59,6 +61,13 @@ class RixsServiceClient(QObject):
         return self._request(c.SUBJ_DISCOVER, {}, timeout_ms)
 
     def get_result(self, run_uid: str, timeout_ms: int = 5000) -> dict | None:
+        """The stored focus result for ``run_uid``.
+
+        Returns the complete payload, or the service's ``{"pending": True, run_uid,
+        frames_done, total}`` reply while the run is still bound or being drained
+        (callers check ``.get("pending")``). None for no reply, timeout or an
+        ``{"error": ...}`` reply (unknown run).
+        """
         reply = self._request(c.SUBJ_RESULT, {"run_uid": run_uid}, timeout_ms)
         if isinstance(reply, dict) and "error" in reply:
             logger.debug(f"rixs result for {run_uid}: {reply['error']}")
