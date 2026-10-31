@@ -155,9 +155,12 @@ def test_status_and_error(panel):
     assert "boom" in panel._status_label.text()
 
 
-def test_close_disables_binder(panel):
+def test_close_keeps_binder_enabled(panel):
+    """The panel is only a view: closing it must not unbind the agent's scans."""
+    panel.test_binder.disable.reset_mock()
     panel._on_closing()
-    panel.test_binder.disable.assert_called()
+    panel.test_binder.disable.assert_not_called()
+    assert not panel._retry_timer.isActive()
 
 
 def test_plugin_panel_class():

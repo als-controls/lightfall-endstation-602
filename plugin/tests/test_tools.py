@@ -26,6 +26,7 @@ class FakeClient:
 @pytest.fixture
 def plugin(monkeypatch):
     monkeypatch.setattr(tools, "_REGISTERED", True)  # skip registry side effects
+    monkeypatch.setattr(runtime, "ensure_binder_enabled", lambda: True)
     return QerlinFocusingTools()
 
 
@@ -151,3 +152,21 @@ def test_singletons_resolved_on_main_thread(plugin, monkeypatch):
     assert out == {"run_uid": "u9"}
     assert state["discover_thread"] != main_ident
     assert state["get_client_on_main"] and all(state["get_client_on_main"])
+
+
+def test_get_focus_result_rearms_binder(plugin, monkeypatch):
+    calls = []
+    client = FakeClient(results={"u1": {"run_uid": "u1"}}, last_complete={"run_uid": "u1"})
+    monkeypatch.setattr(runtime, "get_client", lambda: client)
+    monkeypatch.setattr(runtime, "ensure_binder_enabled", lambda: calls.append(1) or True)
+    out = _payload(asyncio.run(_tool(plugin, "get_focus_result")({})))
+    assert out == {"run_uid": "u1"}
+    assert calls == [1]
+
+
+def test_get_focus_result_missing_mentions_unbound_binder(plugin, monkeypatch):
+    monkeypatch.setattr(runtime, "get_client", lambda: FakeClient())
+    monkeypatch.setattr(runtime, "ensure_binder_enabled", lambda: False)
+    res = asyncio.run(_tool(plugin, "get_focus_result")({"run_uid": "nope"}))
+    assert res.get("is_error") is True
+    assert "binder" in res["content"][0]["text"]

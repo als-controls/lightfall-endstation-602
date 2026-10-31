@@ -60,13 +60,14 @@ def _status_payload(reply: dict | None, binder_enabled: bool) -> dict[str, Any]:
     }
 
 
-def _prepare_result(run_uid: str | None) -> tuple[Any, str]:
-    """Main thread: fetch the client and resolve the default run uid."""
+def _prepare_result(run_uid: str | None) -> tuple[Any, str, bool]:
+    """Main thread: re-arm the binder, fetch the client, resolve the default run uid."""
+    binder_enabled = runtime.ensure_binder_enabled()
     client = runtime.get_client()
     uid = run_uid
     if not uid and client.last_complete:
         uid = client.last_complete.get("run_uid")
-    return client, uid or ""
+    return client, uid or "", binder_enabled
 
 
 class QerlinFocusingTools(ToolPlugin):
@@ -152,15 +153,17 @@ class QerlinFocusingTools(ToolPlugin):
         async def get_focus_result(args: dict) -> dict[str, Any]:
             requested = (args or {}).get("run_uid") or None
             try:
-                client, uid = _on_main(lambda: _prepare_result(requested))
+                client, uid, binder_enabled = _on_main(lambda: _prepare_result(requested))
                 result = await asyncio.to_thread(client.get_result, uid) if uid else None
             except Exception as ex:  # noqa: BLE001 - surface to the agent
                 return mcp_error(f"get_focus_result failed: {ex}")
             if result is None:
                 label = uid or requested or "<no run>"
-                return mcp_error(
-                    f"no focus result for {label} (service down, or scan not finished)"
-                )
+                msg = f"no focus result for {label} (service down, or scan not finished)"
+                if not binder_enabled:
+                    msg += ("; the rixs run binder is not enabled (no RunEngine?), so scans "
+                            "are not sent to the service for analysis")
+                return mcp_error(msg)
             return mcp_result(result)
 
         return [rixs_service_status, get_focus_result]

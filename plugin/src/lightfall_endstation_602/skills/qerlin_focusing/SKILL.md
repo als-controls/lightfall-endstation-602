@@ -19,7 +19,9 @@ arguments are device names, `start`/`stop` are SM3 pitch in mrad, `exposure_s` i
 ### Procedure
 
 1. **Service check.** Call `rixs_service_status`. If `service_up` is false, stop and tell
-   the user (quote the `hint`); do not scan, since nothing would analyze the frames. Note
+   the user (quote the `hint`); do not scan, since nothing would analyze the frames. If
+   `binder_enabled` is false, also stop and tell the user: scans would run but would not be
+   sent to the service for analysis (usually the RunEngine is not up yet). Note
    `dispersion_mev_per_px`.
 2. **Coarse scan.** Tell the user the range and point count, then call
    `lightfall_run_plan("qerlin_focus_scan", {...})` across the SM3 range of interest

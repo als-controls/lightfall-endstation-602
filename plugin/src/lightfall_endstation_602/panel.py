@@ -241,11 +241,9 @@ class QerlinFocusPanel(BasePanel):
         self._status_label.setText(f"error: {data.get('error', '')}")
 
     def _on_closing(self) -> None:
+        # The panel is only a view of the shared binder: closing it must not unbind
+        # the agent's scans. Only the title-bar toggle disables the binder.
         self._retry_timer.stop()
-        try:
-            self._binder.disable()
-        except Exception as ex:
-            logger.exception(ex)
         super()._on_closing()
 
 

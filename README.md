@@ -88,6 +88,7 @@ Two scripts live outside git under
    `rixs-live/.venv/Scripts/rixs-live run --nats-url nats://127.0.0.1:4222 --lightfall-prefix <ipc_topic_prefix> --dispersion 2.5`
    Tiled is whatever Lightfall is configured for: the plugin sends the Tiled
    URL and API key to the service in each `rixs.run.bind` message.
+   An empty `app_version` in `rixs_service_status` is expected for an editable install.
 3. **Backend.** Start Lightfall and enable the `qerlin_sim` device backend
    (Settings -> Devices; the preference is `device_plugin_qerlin_sim_enabled`). Check that `sm3_pitch`, `mono_energy` and `marana`
    appear.
