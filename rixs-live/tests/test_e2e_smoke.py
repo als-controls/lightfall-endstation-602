@@ -1,0 +1,176 @@
+"""E2E: RunEngine + sim devices -> TiledWriter -> in-memory Tiled; service over a real nats-server.
+
+Full 2048x2048 frames: QERLIN's line finder rejects broad (defocused) lines on
+512x512 frames (see the Task 4 report), so smaller frames would not exercise
+the real fit. Scoring is ~1 s per frame on CPU, hence the generous timeout.
+"""
+import asyncio
+import json
+import shutil
+import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import bluesky.plans as bp
+import nats as natslib
+import pytest
+from bluesky import RunEngine
+from bluesky_tiled_plugins import TiledWriter
+from lightfall_endstation_602.contract import build_rixs_md
+from lightfall_endstation_602.sim.devices import SimMarana, SimSM3Pitch, get_sim_state
+from lightfall_endstation_602.sim.model import FocusModel
+from tiled.catalog import from_uri as catalog_from_uri
+from tiled.client import Context, from_context
+from tiled.server.app import build_app
+
+from rixs_live.config import AppConfig
+from rixs_live.contract import SUBJ_BIND, SUBJ_COMPLETE, SUBJ_ERROR, SUBJ_FRAME, SUBJ_STOP
+from rixs_live.service import RixsLiveService
+
+BEST = 0.3  # hidden best SM3 pitch (mrad), fixed via an explicit FocusModel
+FRAME_SHAPE = (2048, 2048)
+COMPLETE_TIMEOUT_S = 120.0
+
+
+def _nats_binary():
+    exe = Path(sys.executable).parent / (
+        "nats-server.exe" if sys.platform == "win32" else "nats-server")
+    if exe.exists():
+        return str(exe)
+    return shutil.which("nats-server")
+
+
+pytestmark = pytest.mark.skipif(_nats_binary() is None, reason="nats-server not found")
+
+
+def _free_port():
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+@pytest.fixture
+def nats_server():
+    port = _free_port()
+    proc = subprocess.Popen([_nats_binary(), "-a", "127.0.0.1", "-p", str(port)],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                break
+        except OSError:
+            time.sleep(0.05)
+    else:
+        proc.kill()
+        pytest.fail("nats-server did not become ready")
+    yield f"nats://127.0.0.1:{port}"
+    proc.terminate()
+    proc.wait(timeout=5)
+
+
+@pytest.fixture
+def live_tiled_app(tmp_path):
+    """Tiled app whose catalog is a SQLite *file*, not ``:memory:``.
+
+    The shared ``tiled_app`` fixture uses ``tiled.catalog.in_memory``, whose single
+    in-memory connection cannot take the service's polling reads interleaved with
+    TiledWriter's writes (``Could not refresh instance '<Node ...>'`` /
+    FOREIGN KEY failures). Here the writes and reads really are concurrent.
+    """
+    catalog = catalog_from_uri(
+        f"sqlite:///{(tmp_path / 'catalog.db').as_posix()}",
+        writable_storage=[str(tmp_path / "data"),
+                          f"sqlite:///{(tmp_path / 'internal.db').as_posix()}"],
+        init_if_not_exists=True)
+    return build_app(catalog)
+
+
+@pytest.fixture
+def sim_model(monkeypatch):
+    monkeypatch.setenv("LIGHTFALL_SIM_SEED", "1")
+    state = get_sim_state()
+    monkeypatch.setattr(state, "model", FocusModel(best_pitch=BEST))
+    return state.model
+
+
+def _run_scan(writer_client, loop, nc, timings):
+    """Blocking: run the scan in this (worker) thread; publish bind/stop over NATS."""
+    tw = TiledWriter(writer_client, batch_size=1)
+    RE = RunEngine({}, context_managers=[])  # not the main thread: no signal handlers
+
+    def publish(subject, payload):
+        fut = asyncio.run_coroutine_threadsafe(
+            nc.publish(subject, json.dumps(payload).encode()), loop)
+        fut.result(timeout=5)
+
+    def binder(name, doc):  # subscribed after the writer: the doc is already in Tiled
+        if name == "start":
+            publish(SUBJ_BIND, {"run_uid": doc["uid"], "tiled_url": "http://in-memory",
+                                "tiled_api_key": None, "lightfall_prefix": "als.7011",
+                                "contract_version": 1})
+        elif name == "stop":
+            timings["scan_done"] = time.monotonic()
+            publish(SUBJ_STOP, {"run_uid": doc["run_start"]})
+
+    RE.subscribe(tw)
+    RE.subscribe(binder)
+    sm3 = SimSM3Pitch(name="sm3_pitch")
+    marana = SimMarana(name="marana", frame_shape=FRAME_SHAPE)
+    md = {"rixs": build_rixs_md("marana_image", "sm3_pitch", FRAME_SHAPE, 850.0)}
+    (uid,) = RE(bp.scan([marana], sm3, BEST - 1.0, BEST + 1.0, 7, md=md))
+    return uid
+
+
+async def _smoke(nats_url, tiled_app):
+    # One Context: a second Context.from_app on the same app runs the catalog on a
+    # second event loop and corrupts its SQLite writes (FOREIGN KEY failures).
+    with Context.from_app(tiled_app) as ctx:
+        svc_client = writer_client = from_context(ctx)
+        cfg = AppConfig(poll_interval_s=0.1, dispersion_mev_per_px=2.5)
+        cfg.nats.url = nats_url
+        svc = RixsLiveService(cfg, tiled_connect=lambda url, key: svc_client)
+        await svc._nats.connect()
+        await svc._register_subscriptions()
+
+        nc = await natslib.connect(nats_url)
+        events = {"frame": [], "complete": [], "error": []}
+
+        def collector(key):
+            async def cb(msg):
+                events[key].append(json.loads(msg.data))
+            return cb
+
+        await nc.subscribe(SUBJ_FRAME, cb=collector("frame"))
+        await nc.subscribe(SUBJ_COMPLETE, cb=collector("complete"))
+        await nc.subscribe(SUBJ_ERROR, cb=collector("error"))
+        await nc.flush()
+
+        loop = asyncio.get_running_loop()
+        timings = {"t0": time.monotonic()}
+        uid = await loop.run_in_executor(None, _run_scan, writer_client, loop, nc, timings)
+
+        deadline = time.monotonic() + COMPLETE_TIMEOUT_S
+        while time.monotonic() < deadline and not events["complete"] and not events["error"]:
+            await asyncio.sleep(0.1)
+        timings["complete"] = time.monotonic()
+        await nc.drain()
+        await svc._nats.close()
+
+    assert not events["error"], events["error"]
+    assert events["complete"], f"no {SUBJ_COMPLETE} within {COMPLETE_TIMEOUT_S} s"
+    done = events["complete"][0]
+    assert done["run_uid"] == uid and done["motor_field"] == "sm3_pitch"
+    assert [f["seq_num"] for f in events["frame"]] == [1, 2, 3, 4, 5, 6, 7]
+    assert done["fit"]["ok"], done["fit"]
+    assert abs(done["fit"]["optimal_position"] - BEST) < 0.3, done["fit"]
+    print(f"\ne2e timing: scan {timings['scan_done'] - timings['t0']:.1f} s, "
+          f"bind->complete {timings['complete'] - timings['t0']:.1f} s, "
+          f"complete after stop {timings['complete'] - timings['scan_done']:.1f} s; "
+          f"fit optimum {done['fit']['optimal_position']:.3f} (best {BEST})")
+
+
+def test_e2e_smoke(nats_server, live_tiled_app, sim_model):
+    asyncio.run(_smoke(nats_server, live_tiled_app))

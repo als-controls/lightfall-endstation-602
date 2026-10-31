@@ -1,0 +1,254 @@
+"""rixs-live event loop: bind -> poll Tiled -> score + publish each frame; stop -> fit + complete."""
+from __future__ import annotations
+
+import asyncio
+from collections import OrderedDict
+
+from loguru import logger
+
+from rixs_live.config import AppConfig
+from rixs_live.contract import (
+    CONTRACT_VERSION,
+    SUBJ_BIND,
+    SUBJ_COMPLETE,
+    SUBJ_DISCOVER,
+    SUBJ_ERROR,
+    SUBJ_FRAME,
+    SUBJ_RESULT,
+    SUBJ_STATUS,
+    SUBJ_STOP,
+    parse_start_rixs,
+)
+from rixs_live.focus import fit_focus_curve, make_preview, score_frame
+from rixs_live.nats_client import NatsClient
+from rixs_live.tiled_io import FocusRunReader, connect_tiled
+
+EVENTS = [SUBJ_STATUS, SUBJ_ERROR, SUBJ_FRAME, SUBJ_COMPLETE]
+ACTIONS = [SUBJ_RESULT]
+POINT_KEYS = ("position", "fwhm_px", "fwhm_mev", "resolving_power", "score_valid")
+
+
+class RixsLiveService:
+    def __init__(self, config: AppConfig, *, nats_client=None, tiled_connect=None) -> None:
+        self._config = config
+        self._nats = nats_client or NatsClient(config.nats)
+        self._tiled_connect = tiled_connect or connect_tiled
+        self._poll_task: asyncio.Task | None = None
+        # dict: run_uid, reader, info, total, next, frames (per-frame payloads), stop (Event)
+        self._current: dict | None = None
+        self.results: OrderedDict[str, dict] = OrderedDict()
+
+    @property
+    def busy(self) -> bool:
+        return self._current is not None
+
+    def main(self) -> None:
+        asyncio.run(self._main())
+
+    async def _main(self) -> None:
+        await self._nats.connect()
+        await self._register_subscriptions()
+        asyncio.get_running_loop().create_task(self._authenticate_bg())
+        logger.info("rixs-live ready")
+        try:
+            while True:
+                await asyncio.sleep(0.5)
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            pass
+        finally:
+            await self._nats.close()
+
+    async def _authenticate_bg(self) -> None:
+        try:
+            await self._nats.authenticate()
+        except Exception as ex:
+            logger.warning(f"background auth failed: {ex}")
+
+    async def _register_subscriptions(self) -> None:
+        await self._nats.subscribe(SUBJ_BIND, self._handle_bind)
+        await self._nats.subscribe(SUBJ_STOP, self._handle_stop)
+        await self._nats.subscribe(SUBJ_RESULT, self._handle_result)
+        await self._nats.subscribe(SUBJ_DISCOVER, self._handle_discover)
+        await self._nats.subscribe("rixs.meta.actions", self._handle_discover)
+        await self._nats.subscribe("rixs.meta.events", self._handle_discover)
+
+    async def _handle_discover(self, data, msg) -> None:
+        await self._nats.reply(msg, {
+            "app_name": self._config.nats.app_name,
+            "app_version": self._config.nats.app_version,
+            "actions": ACTIONS,
+            "events": EVENTS,
+            "dispersion_mev_per_px": self._config.dispersion_mev_per_px,
+        })
+
+    async def _handle_result(self, data: dict, msg) -> None:
+        run_uid = data.get("run_uid", "")
+        result = self.results.get(run_uid)
+        await self._nats.reply(msg, result if result is not None
+                               else {"error": f"unknown run {run_uid}"})
+
+    def _resolve_credentials(self, data: dict) -> tuple[str, str | None]:
+        url = data.get("tiled_url") or ""
+        key = data.get("tiled_api_key")
+        cached = self._nats.tiled_credentials or {}
+        if not url:
+            url = cached.get("tiled_url") or self._config.tiled.url
+        if not key:
+            key = cached.get("tiled_token") or self._config.tiled.api_key
+        return url, key
+
+    async def _status(self, cur: dict, state: str) -> None:
+        await self._nats.publish(SUBJ_STATUS, {
+            "run_uid": cur["run_uid"], "state": state,
+            "frames_done": len(cur["frames"]), "total": cur["total"]})
+
+    async def _handle_bind(self, data: dict, msg) -> None:
+        run_uid = data.get("run_uid", "")
+        try:
+            version = data.get("contract_version", CONTRACT_VERSION)
+            if version != CONTRACT_VERSION:
+                raise ValueError(
+                    f"contract_version {version} != {CONTRACT_VERSION}; refusing bind")
+            url, key = self._resolve_credentials(data)
+            loop = asyncio.get_running_loop()
+            tiled_client = await loop.run_in_executor(None, self._tiled_connect, url, key)
+            run = await loop.run_in_executor(None, tiled_client.__getitem__, run_uid)
+            start = run.metadata.get("start", {})
+            info = parse_start_rixs(run_uid, start)
+            if info is None:
+                logger.info(f"bind ignored for non-rixs run {run_uid}")
+                return
+            if self._current is not None:
+                logger.warning(f"replacing bound run {self._current['run_uid']}")
+                await self._teardown_poll()
+            self._current = {
+                "run_uid": run_uid,
+                "reader": FocusRunReader(run, info),
+                "info": info,
+                "total": start.get("num_points"),
+                "next": 0,
+                "frames": [],
+                "stop": asyncio.Event(),
+            }
+            self._poll_task = loop.create_task(self._poll_run(self._current))
+            await self._status(self._current, "binding")
+            logger.info(f"bound run {run_uid} ({info.image_field} vs {info.motor_field})")
+        except Exception as ex:
+            logger.exception(f"bind failed for {run_uid}")
+            await self._nats.publish(SUBJ_ERROR, {"run_uid": run_uid, "error": str(ex)})
+
+    async def _score_new(self, cur: dict, *, drain: bool = False) -> int:
+        """Score and publish every frame not yet seen; returns how many were new.
+
+        Raises KeyError while the primary stream does not exist yet. Stops early
+        (between frames) once a stop/rebind is requested, except when draining.
+        """
+        loop = asyncio.get_running_loop()
+        first = cur["next"]
+        rows = await loop.run_in_executor(None, cur["reader"].read_new, first)
+        info = cur["info"]
+        disp = self._config.dispersion_mev_per_px
+        for seq_num, position, frame in rows:
+            if cur["stop"].is_set() and not drain:
+                break  # stop/rebind requested: leave the rest to the drain (or drop it)
+            score = await loop.run_in_executor(
+                None, score_frame, frame, disp, info.mono_energy_ev)
+            preview = await loop.run_in_executor(None, make_preview, frame)
+            payload = {"run_uid": cur["run_uid"], "seq_num": seq_num,
+                       "position": position, **score.to_dict(), "preview": preview}
+            cur["frames"].append(payload)
+            cur["next"] += 1
+            await self._nats.publish(SUBJ_FRAME, payload)
+        return cur["next"] - first
+
+    async def _poll_run(self, cur: dict) -> None:
+        while not cur["stop"].is_set():
+            try:
+                try:
+                    n_new = await self._score_new(cur)
+                except KeyError:
+                    n_new = 0  # stream not created yet
+                if n_new:
+                    await self._status(cur, "scoring")
+            except Exception as ex:
+                logger.exception(f"poll failed for {cur['run_uid']}")
+                await self._nats.publish(SUBJ_ERROR,
+                                         {"run_uid": cur["run_uid"], "error": str(ex)})
+                if self._current is cur:
+                    self._current = None
+                return
+            try:
+                await asyncio.wait_for(cur["stop"].wait(),
+                                       self._config.poll_interval_s)
+            except asyncio.TimeoutError:
+                pass
+
+    async def _teardown_poll(self) -> None:
+        if self._current is not None:
+            self._current["stop"].set()
+        if self._poll_task is not None:
+            try:
+                await self._poll_task
+            except Exception:
+                logger.exception("poll task died")
+            self._poll_task = None
+        self._current = None
+
+    def _complete_payload(self, cur: dict) -> dict:
+        frames = cur["frames"]
+        points = [{k: f[k] for k in POINT_KEYS} for f in frames]
+        valid = [p for p in points if p["score_valid"] and p["fwhm_px"] is not None]
+        fit = fit_focus_curve([p["position"] for p in valid], [p["fwhm_px"] for p in valid])
+        best = min(valid, key=lambda p: p["fwhm_px"]) if valid else None
+        return {
+            "run_uid": cur["run_uid"],
+            "motor_field": cur["info"].motor_field,
+            "points": points,
+            "fit": fit,
+            "best_measured": ({"position": best["position"], "fwhm_px": best["fwhm_px"]}
+                              if best else None),
+        }
+
+    def _store(self, run_uid: str, payload: dict) -> None:
+        self.results[run_uid] = payload
+        self.results.move_to_end(run_uid)
+        while len(self.results) > max(self._config.keep_results, 0):
+            self.results.popitem(last=False)
+
+    async def _handle_stop(self, data: dict, msg) -> None:
+        run_uid = data.get("run_uid", "")
+        cur = self._current
+        if cur is None or cur["run_uid"] != run_uid:
+            logger.info(f"stop for unknown/unbound run {run_uid}; ignoring")
+            return
+        try:
+            cur["stop"].set()
+            if self._poll_task is not None:
+                await self._poll_task
+                self._poll_task = None
+            if self._current is not cur:  # poll failed (error already published)
+                return
+            try:
+                await self._score_new(cur, drain=True)  # drain frames the poll loop has not seen
+            except KeyError:
+                pass  # no frames were ever written
+            payload = self._complete_payload(cur)
+            self._store(run_uid, payload)
+            await self._nats.publish(SUBJ_COMPLETE, payload)
+            logger.info(f"run {run_uid} complete: {len(cur['frames'])} frames, "
+                        f"fit {payload['fit']}")
+        except Exception as ex:
+            logger.exception(f"completion failed for {run_uid}")
+            await self._nats.publish(SUBJ_ERROR, {"run_uid": run_uid, "error": str(ex)})
+        finally:
+            if self._current is cur:
+                self._current = None
+                await self._status(cur, "idle")
+
+    async def wait_idle(self) -> None:
+        """Test helper: await completion of any in-flight poll task."""
+        if self._poll_task is not None:
+            if self._current is not None:
+                self._current["stop"].set()
+            await self._poll_task
+            self._poll_task = None
