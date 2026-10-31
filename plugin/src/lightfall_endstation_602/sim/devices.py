@@ -85,7 +85,8 @@ class SimMarana(Device):
 
     def describe(self):
         d = super().describe()
-        d[self.image.name].update(shape=list(self.frame_shape), dtype="array")
+        d[self.image.name].update(
+            shape=list(self.frame_shape), dtype="array", dtype_numpy="<u2")
         return d
 
     def trigger(self):

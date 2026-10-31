@@ -71,3 +71,14 @@ def test_backend_resource_and_classes():
         mod, cls = e["device_class"].rsplit(".", 1)
         assert hasattr(importlib.import_module(mod), cls)
     assert QerlinSimBackendPlugin().name == "qerlin_sim"
+
+
+def test_describe_declares_uint16(rig):
+    _, _, cam = rig
+    d = cam.describe()["marana_image"]
+    assert d["dtype"] == "array"
+    assert d["dtype_numpy"] == "<u2"
+    assert d["shape"] == [256, 256]
+    assert cam.image.get().dtype == np.uint16
+    cam.trigger().wait(2)
+    assert cam.image.get().dtype == np.uint16
