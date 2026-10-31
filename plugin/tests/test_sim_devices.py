@@ -2,7 +2,6 @@ import numpy as np
 import pytest
 from ophyd.status import Status
 
-from lightfall_endstation_602.sim import devices
 from lightfall_endstation_602.sim.devices import (
     SimMarana, SimMonoEnergy, SimSM3Pitch, get_sim_state,
 )
