@@ -120,7 +120,9 @@ class RixsRunBinder:
             elif name == "stop":
                 uid = doc.get("run_start") or self._bound_uid
                 if uid and uid == self._bound_uid:
-                    self._client.run_stop(uid)
+                    self._client.run_stop(
+                        uid, exit_status=doc.get("exit_status"),
+                        num_events=doc.get("num_events"))
                 self._bound_uid = None
         except Exception as ex:  # never break the RunEngine document stream
             logger.exception(ex)

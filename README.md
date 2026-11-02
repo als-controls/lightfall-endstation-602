@@ -108,6 +108,7 @@ Two scripts live outside git under
    focus the spectrometer. It checks `rixs_service_status`, runs focus scans,
    reads `get_focus_result`, and moves SM3 to the optimum.
 
-An aborted or rejected scan still gets a (failed or partial) result, but about
-15 s late: the service keeps waiting for the frames the start document
-promised until the drain cap (`drain_timeout_s`) runs out.
+An aborted or failed scan completes as soon as its rows stop arriving
+(`drain_settle_s`): the stop document's `exit_status` and `num_events` are
+forwarded to the service, which no longer waits for the start document's
+`num_points`.

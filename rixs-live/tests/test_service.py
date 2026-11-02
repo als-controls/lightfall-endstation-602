@@ -618,3 +618,81 @@ async def test_bind_prefix_mismatch_logged_once(stub_score):
     mism = [m for m in msgs if "differs" in m]
     assert len(mism) == 1 and "als.602" in mism[0]
     assert fake.on(SUBJ_ERROR) == []  # still binds fine
+
+
+async def test_aborted_run_completes_without_waiting_for_num_points(stub_score):
+    pos = [-0.8, -0.4, 0.0, 0.4, 0.8]
+    fake, tiled = FakeNats(), FakeTiled()
+    stream = _add_run(tiled, "runA", _parabola_frames(pos), pos)  # promises 5
+    stream.visible = 2
+    svc = _service(fake, tiled, drain_settle_s=0.2, drain_timeout_s=10.0)
+    await svc._handle_bind(_bind("runA"), None)
+    await _until(lambda: len(fake.on(SUBJ_FRAME)) == 2)
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
+    await svc._handle_stop({"run_uid": "runA", "exit_status": "abort"}, None)
+    assert loop.time() - t0 < 3.0
+    (done,) = fake.on(SUBJ_COMPLETE)
+    assert len(done["points"]) == 2 and not svc.busy
+
+
+async def test_aborted_run_still_collects_late_rows_within_settle(stub_score):
+    pos = [-0.8, -0.4, 0.0, 0.4, 0.8]
+    fake, tiled = FakeNats(), FakeTiled()
+    stream = _add_run(tiled, "runA", _parabola_frames(pos), pos)
+    stream.visible = 2
+    svc = _service(fake, tiled, drain_settle_s=1.0, drain_timeout_s=10.0)
+    await svc._handle_bind(_bind("runA"), None)
+    await _until(lambda: len(fake.on(SUBJ_FRAME)) == 2)
+    task = _later(0.3, lambda: setattr(stream, "visible", 3))
+    await svc._handle_stop({"run_uid": "runA", "exit_status": "fail"}, None)
+    await task
+    (done,) = fake.on(SUBJ_COMPLETE)
+    assert len(done["points"]) == 3
+
+
+async def test_stop_num_events_used_as_expected_total(stub_score):
+    pos = [-0.8, -0.4, 0.0, 0.4, 0.8]
+    fake, tiled = FakeNats(), FakeTiled()
+    stream = _add_run(tiled, "runA", _parabola_frames(pos), pos)  # num_points = 5
+    stream.visible = 3
+    svc = _service(fake, tiled, drain_settle_s=0.1, drain_timeout_s=10.0)
+    await svc._handle_bind(_bind("runA"), None)
+    await _until(lambda: len(fake.on(SUBJ_FRAME)) == 3)
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
+    # Aborted after 3 events: num_events wins over num_points, so no waiting for 5.
+    await svc._handle_stop({"run_uid": "runA", "exit_status": "abort",
+                            "num_events": {"primary": 3}}, None)
+    assert loop.time() - t0 < 3.0
+    assert len(fake.on(SUBJ_COMPLETE)[0]["points"]) == 3
+
+
+async def test_stop_num_events_waits_for_late_rows(stub_score):
+    pos = [-0.8, -0.4, 0.0, 0.4, 0.8]
+    fake, tiled = FakeNats(), FakeTiled()
+    stream = _add_run(tiled, "runA", _parabola_frames(pos), pos)
+    del tiled.runs["runA"].metadata["start"]["num_points"]  # unknown from the start doc
+    stream.visible = 2
+    svc = _service(fake, tiled, drain_settle_s=0.1, drain_timeout_s=5.0)
+    await svc._handle_bind(_bind("runA"), None)
+    await _until(lambda: len(fake.on(SUBJ_FRAME)) == 2)
+    task = _later(0.6, lambda: setattr(stream, "visible", 4))  # past drain_settle_s
+    await svc._handle_stop({"run_uid": "runA", "exit_status": "success",
+                            "num_events": {"primary": 4}}, None)
+    await task
+    assert len(fake.on(SUBJ_COMPLETE)[0]["points"]) == 4
+
+
+async def test_old_style_stop_payload_still_waits_for_num_points(stub_score):
+    pos = [-0.8, -0.4, 0.0, 0.4, 0.8]
+    fake, tiled = FakeNats(), FakeTiled()
+    stream = _add_run(tiled, "runA", _parabola_frames(pos), pos)
+    stream.visible = 2
+    svc = _service(fake, tiled, drain_settle_s=0.1, drain_timeout_s=5.0)
+    await svc._handle_bind(_bind("runA"), None)
+    await _until(lambda: len(fake.on(SUBJ_FRAME)) == 2)
+    task = _later(0.5, lambda: setattr(stream, "visible", 5))
+    await svc._handle_stop({"run_uid": "runA"}, None)  # no exit_status / num_events
+    await task
+    assert len(fake.on(SUBJ_COMPLETE)[0]["points"]) == 5

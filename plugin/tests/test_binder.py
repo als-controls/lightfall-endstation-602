@@ -111,3 +111,14 @@ def test_default_prefix_matches_lightfall_default(monkeypatch):
     monkeypatch.setitem(__import__("sys").modules, "lightfall.ui.preferences.manager", None)
     assert bmod._default_prefix() == DEFAULT_IPC_TOPIC_PREFIX
     assert DEFAULT_IPC_TOPIC_PREFIX != "als.602"
+
+
+def test_stop_forwards_exit_status_and_num_events(fake_ipc):
+    b, re = _binder(fake_ipc)
+    b.enable()
+    cb = re.subscribe.call_args[0][0]
+    cb("start", _start())
+    cb("stop", {"run_start": "runX", "exit_status": "abort",
+                "num_events": {"primary": 3}})
+    assert (c.SUBJ_STOP, {"run_uid": "runX", "exit_status": "abort",
+                          "num_events": {"primary": 3}}) in fake_ipc.published

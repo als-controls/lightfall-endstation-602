@@ -86,7 +86,14 @@ class RixsServiceClient(QObject):
             "contract_version": c.CONTRACT_VERSION,
         })
 
-    def run_stop(self, run_uid: str) -> None:
+    def run_stop(self, run_uid: str, exit_status: str | None = None,
+                 num_events: dict | None = None) -> None:
+        """Publish rixs.run.stop; ``exit_status``/``num_events`` come from the stop doc."""
         if self._ipc is None:
             return
-        self._ipc.publish(c.SUBJ_STOP, {"run_uid": run_uid})
+        payload: dict = {"run_uid": run_uid}
+        if exit_status is not None:
+            payload["exit_status"] = exit_status
+        if isinstance(num_events, dict):
+            payload["num_events"] = dict(num_events)
+        self._ipc.publish(c.SUBJ_STOP, payload)

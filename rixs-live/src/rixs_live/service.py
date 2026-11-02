@@ -40,7 +40,7 @@ class RixsLiveService:
         self._current: dict | None = None
         self.results: OrderedDict[str, dict] = OrderedDict()
         self._binding: set[str] = set()  # run uids whose bind is still in progress
-        self._pending_stops: set[str] = set()  # stops that arrived during their bind
+        self._pending_stops: dict[str, dict] = {}  # stops that arrived during their bind
 
     @property
     def busy(self) -> bool:
@@ -160,8 +160,7 @@ class RixsLiveService:
         finally:
             self._binding.discard(run_uid)
         if run_uid in self._pending_stops:
-            self._pending_stops.discard(run_uid)
-            await self._handle_stop({"run_uid": run_uid}, None)
+            await self._handle_stop(self._pending_stops.pop(run_uid), None)
 
     async def _bind(self, run_uid: str, data: dict) -> None:
         try:
@@ -256,20 +255,40 @@ class RixsLiveService:
             self._poll_task = None
         self._current = None
 
-    async def _drain(self, cur: dict) -> None:
+    @staticmethod
+    def _expected_frames(cur: dict, stop: dict) -> int | None:
+        """Frame count the drain should wait for, or None to wait for rows to settle.
+
+        Stop doc ``num_events.primary`` wins when present; else a non-success
+        ``exit_status`` (abort/fail) means the start doc's ``num_points`` will never
+        be reached; else ``num_points``.
+        """
+        ne = stop.get("num_events")
+        primary = ne.get("primary") if isinstance(ne, dict) else None
+        if isinstance(primary, int) and not isinstance(primary, bool) and primary >= 0:
+            return primary
+        status = stop.get("exit_status")
+        if status is not None and status != "success":
+            return None
+        total = cur["total"]
+        return total if isinstance(total, int) and total > 0 else None
+
+    async def _drain(self, cur: dict, stop: dict | None = None) -> None:
         """Score the frames the poll loop has not seen, including late ones.
 
         With an asynchronous writer the last events may land after the stop. Keep
-        re-polling until ``total`` frames (start doc ``num_points``) have been read
-        when known, else until no new rows appeared for ``drain_settle_s``. The cap,
+        re-polling until the expected frame count (stop doc ``num_events.primary``,
+        else start doc ``num_points`` for a successful run) has been read, else
+        (unknown count, or an aborted/failed run) until no new rows appeared for
+        ``drain_settle_s``. The cap,
         ``drain_timeout_s``, counts only time spent *waiting without new rows*:
         scoring a backlog (~1 s/frame) never cuts off frames that are already there.
         Then complete with whatever arrived.
         """
         loop = asyncio.get_running_loop()
         cfg = self._config
-        total = cur["total"]
-        known = isinstance(total, int) and total > 0
+        total = self._expected_frames(cur, stop or {})
+        known = total is not None
         interval = min(cfg.poll_interval_s, 0.1)
         idle = 0.0  # waiting time since the last new row
         while True:
@@ -319,7 +338,7 @@ class RixsLiveService:
         cur = self._current
         if run_uid in self._binding and (cur is None or cur["run_uid"] != run_uid):
             logger.info(f"stop for {run_uid} arrived during its bind; deferred")
-            self._pending_stops.add(run_uid)
+            self._pending_stops[run_uid] = data
             return
         if cur is None or cur["run_uid"] != run_uid:
             logger.info(f"stop for unknown/unbound run {run_uid}; ignoring")
@@ -331,7 +350,7 @@ class RixsLiveService:
                 self._poll_task = None
             if self._current is not cur:  # poll failed (error already published)
                 return
-            await self._drain(cur)
+            await self._drain(cur, data)
             payload = self._complete_payload(cur)
             self._store(run_uid, payload)
             await self._nats.publish(SUBJ_COMPLETE, payload)
