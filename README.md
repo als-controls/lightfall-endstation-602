@@ -1,6 +1,6 @@
 # lightfall-endstation-6.0.2
 
-Lightfall integration for the ALS beamline 6.0.2 (QERLIN) endstation. Private until licensed.
+Lightfall integration for the ALS beamline 6.0.2 (QERLIN) endstation. Internal project, kept private.
 
 - `plugin/` - `lightfall-endstation-602` (import `lightfall_endstation_602`): Lightfall plugin with sim devices and UI.
 - `rixs-live/` - `rixs-live` (import `rixs_live`): headless NATS-bound analysis service wrapping the QERLIN RIXS code.
@@ -8,11 +8,12 @@ Lightfall integration for the ALS beamline 6.0.2 (QERLIN) endstation. Private un
 The two packages share a small versioned NATS contract (`contract.py`), duplicated in each.
 The service never imports the plugin at runtime.
 
-## Licensing
+## Distribution
 
-This repository stays private (local, no remote push) until QERLIN's code
-(`mRIXS-super-app`, imported as `rixs_app`) has a license. Do not publish it or
-the `rixs-live` package before then.
+This is an internal ALS project. The repository stays private on ALS GitLab
+(`ncs/lightfall-endstation-6.0.2`), and QERLIN's code (`mRIXS-super-app`,
+imported as `rixs_app`) is an internal tool without a license. Don't publish
+this repository or the `rixs-live` package.
 
 ## Setup
 
