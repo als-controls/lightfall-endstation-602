@@ -39,7 +39,7 @@ def test_binder_bind_and_stop(fake_ipc):
     cb = re.subscribe.call_args[0][0]
     cb("start", _start())
     assert fake_ipc.published == [(c.SUBJ_BIND, {
-        "run_uid": "runX", "tiled_url": "http://t", "tiled_api_key": "key",
+        "run_uid": "runX", "tiled_url": "http://t",
         "lightfall_prefix": "als.602", "contract_version": c.CONTRACT_VERSION})]
     assert b._client.last_bound_uid == "runX"
     cb("stop", {"run_start": "runX"})
@@ -62,3 +62,23 @@ def test_callback_exceptions_swallowed(fake_ipc):
     b._get_creds = lambda: (_ for _ in ()).throw(RuntimeError("boom"))
     b.enable()
     re.subscribe.call_args[0][0]("start", _start())
+
+
+def test_bind_payload_never_carries_api_key(fake_ipc):
+    b, re = _binder(fake_ipc)
+    b.enable()
+    re.subscribe.call_args[0][0]("start", _start())
+    assert "tiled_api_key" not in fake_ipc.published[0][1]
+
+
+def test_default_credentials_never_read_session_key(monkeypatch):
+    import sys
+    import types
+    from lightfall_endstation_602 import binder as bm
+    boom = MagicMock(side_effect=AssertionError("key must not be read"))
+    mod = types.ModuleType("lightfall.auth.session")
+    mod.SessionManager = types.SimpleNamespace(get_instance=boom)
+    monkeypatch.setitem(sys.modules, "lightfall.auth.session", mod)
+    url, key, _ = bm._default_credentials()
+    assert key is None
+    boom.assert_not_called()

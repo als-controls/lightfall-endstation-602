@@ -38,7 +38,9 @@ class AppConfig(BaseModel):
 
 def load_config(path: str | None = None, *, nats_url: str | None = None,
                 lightfall_prefix: str | None = None,
-                dispersion: float | None = None) -> AppConfig:
+                dispersion: float | None = None,
+                tiled_url: str | None = None,
+                tiled_api_key: str | None = None) -> AppConfig:
     data = {}
     if path:
         with open(path) as f:
@@ -50,4 +52,8 @@ def load_config(path: str | None = None, *, nats_url: str | None = None,
         cfg.nats.lightfall_prefix = lightfall_prefix
     if dispersion is not None:
         cfg.dispersion_mev_per_px = dispersion
+    if tiled_url:
+        cfg.tiled.url = tiled_url
+    if tiled_api_key:
+        cfg.tiled.api_key = tiled_api_key
     return cfg

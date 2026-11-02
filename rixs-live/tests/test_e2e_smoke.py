@@ -136,7 +136,7 @@ def _run_scan(writer_client, loop, nc, timings, async_writer=False):
     def binder(name, doc):  # subscribed after the writer: the doc is already in Tiled
         if name == "start":
             publish(SUBJ_BIND, {"run_uid": doc["uid"], "tiled_url": "http://in-memory",
-                                "tiled_api_key": None, "lightfall_prefix": "als.7011",
+                                "lightfall_prefix": "als.7011",
                                 "contract_version": 1})
         elif name == "stop":
             timings["scan_done"] = time.monotonic()
@@ -162,7 +162,8 @@ async def _smoke(nats_url, tiled_app, async_writer):
     # second event loop and corrupts its SQLite writes (FOREIGN KEY failures).
     with Context.from_app(tiled_app) as ctx:
         svc_client = writer_client = from_context(ctx)
-        cfg = AppConfig(poll_interval_s=0.1, dispersion_mev_per_px=2.5)
+        cfg = AppConfig(poll_interval_s=0.1, dispersion_mev_per_px=2.5,
+                        tiled={"url": "http://in-memory", "api_key": "k"})
         cfg.nats.url = nats_url
         svc = RixsLiveService(cfg, tiled_connect=lambda url, key: svc_client)
         await svc._nats.connect()

@@ -109,14 +109,14 @@ def _add_run(tiled, uid, frames, positions, **md_over):
     return stream
 
 
-def _service(fake, tiled, **cfg_over):
+def _service(fake, tiled_fake, **cfg_over):
     cfg = AppConfig(**{"poll_interval_s": 0.01, "bind_lookup_timeout_s": 0.3,
                        "drain_settle_s": 0.2, "drain_timeout_s": 2.0, **cfg_over})
-    return RixsLiveService(cfg, nats_client=fake, tiled_connect=lambda url, key: tiled)
+    return RixsLiveService(cfg, nats_client=fake, tiled_connect=lambda url, key: tiled_fake)
 
 
 def _bind(uid):
-    return {"run_uid": uid, "tiled_url": "http://local", "tiled_api_key": "k",
+    return {"run_uid": uid, "tiled_url": "http://local",
             "lightfall_prefix": "als.7011", "contract_version": 1}
 
 
@@ -569,3 +569,33 @@ async def test_slow_backlog_not_cut_off_by_drain_cap(monkeypatch):
     await task
     (done,) = fake.on(SUBJ_COMPLETE)
     assert len(done["points"]) == 10
+
+
+def test_credentials_never_from_bind_and_warns_once():
+    from loguru import logger
+    fake = FakeNats()
+    svc = _service(fake, None, tiled={"url": "http://cfg", "api_key": "cfgkey"})
+    msgs = []
+    sink = logger.add(lambda m: msgs.append(str(m)), level="WARNING")
+    try:
+        data = {"tiled_url": "http://bind", "tiled_api_key": "leaked"}
+        assert svc._resolve_credentials(data) == ("http://bind", "cfgkey")
+        assert svc._resolve_credentials(data) == ("http://bind", "cfgkey")
+    finally:
+        logger.remove(sink)
+    assert len([m for m in msgs if "public subjects" in m]) == 1
+    assert "leaked" not in "".join(msgs)
+
+
+def test_credentials_cached_auth_token_beats_config():
+    fake = FakeNats()
+    fake.tiled_credentials = {"tiled_url": "http://auth", "tiled_token": "tok"}
+    svc = _service(fake, None, tiled={"url": "http://cfg", "api_key": "cfgkey"})
+    assert svc._resolve_credentials({"tiled_api_key": "leaked"}) == ("http://auth", "tok")
+    assert svc._resolve_credentials({"tiled_url": "http://bind"}) == ("http://bind", "tok")
+
+
+def test_credentials_config_fallback_and_none():
+    svc = _service(FakeNats(), None, tiled={"url": "http://cfg", "api_key": "cfgkey"})
+    assert svc._resolve_credentials({}) == ("http://cfg", "cfgkey")
+    assert _service(FakeNats(), None)._resolve_credentials({}) == ("", None)

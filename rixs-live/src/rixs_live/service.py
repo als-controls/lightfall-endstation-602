@@ -33,6 +33,7 @@ class RixsLiveService:
         self._config = config
         self._nats = nats_client or NatsClient(config.nats)
         self._tiled_connect = tiled_connect or connect_tiled
+        self._warned_bind_key = False
         self._poll_task: asyncio.Task | None = None
         # dict: run_uid, reader, info, total, next, frames (per-frame payloads), stop (Event)
         self._current: dict | None = None
@@ -102,13 +103,14 @@ class RixsLiveService:
         return None
 
     def _resolve_credentials(self, data: dict) -> tuple[str, str | None]:
-        url = data.get("tiled_url") or ""
-        key = data.get("tiled_api_key")
+        """URL: bind, then cached auth, then config. Key: never from the bind."""
+        if data.get("tiled_api_key") is not None and not self._warned_bind_key:
+            self._warned_bind_key = True
+            logger.warning("ignoring tiled_api_key in rixs.run.bind: API keys must not "
+                           "travel on public subjects (update the Lightfall plugin)")
         cached = self._nats.tiled_credentials or {}
-        if not url:
-            url = cached.get("tiled_url") or self._config.tiled.url
-        if not key:
-            key = cached.get("tiled_token") or self._config.tiled.api_key
+        url = data.get("tiled_url") or cached.get("tiled_url") or self._config.tiled.url
+        key = cached.get("tiled_token") or self._config.tiled.api_key
         return url, key
 
     async def _status(self, cur: dict, state: str) -> None:

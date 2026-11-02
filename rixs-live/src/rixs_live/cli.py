@@ -20,9 +20,15 @@ def main() -> None:
 @click.option("--lightfall-prefix", default=None, help="Lightfall topic prefix (auth subject)")
 @click.option("--dispersion", type=float, default=None,
               help="Spectrometer dispersion in meV/px (0 = unknown)")
+@click.option("--tiled-url", default=None,
+              help="Tiled URL (fallback when the bind and auth handshake give none)")
+@click.option("--tiled-api-key", default=None, envvar="RIXS_LIVE_TILED_API_KEY",
+              help="Tiled API key for brokers without the auth callout "
+                   "(env: RIXS_LIVE_TILED_API_KEY)")
 @click.option("--config", "config_path", default=None, type=click.Path(exists=True))
-def run(nats_url, lightfall_prefix, dispersion, config_path) -> None:
+def run(nats_url, lightfall_prefix, dispersion, tiled_url, tiled_api_key, config_path) -> None:
     """Run the analysis service."""
     cfg = load_config(config_path, nats_url=nats_url,
-                      lightfall_prefix=lightfall_prefix, dispersion=dispersion)
+                      lightfall_prefix=lightfall_prefix, dispersion=dispersion,
+                      tiled_url=tiled_url, tiled_api_key=tiled_api_key)
     _run_service(cfg)

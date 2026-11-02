@@ -14,7 +14,12 @@ def _default_run_engine():
 
 
 def _default_credentials():
-    tiled_url, api_key = "", None
+    """``(tiled_url, None, None)``: the URL is not secret; the API key is never read.
+
+    The service gets Tiled credentials from its own private auth handshake, because
+    ``rixs.run.bind`` is a public subject.
+    """
+    tiled_url = ""
     try:
         from lightfall.core.services import ServiceRegistry
         from lightfall.services.tiled_service import TiledService
@@ -23,12 +28,7 @@ def _default_credentials():
             tiled_url = ts.config.url or ""
     except Exception:
         pass
-    try:
-        from lightfall.auth.session import SessionManager
-        api_key = SessionManager.get_instance().get_api_key("tiled")
-    except Exception:
-        pass
-    return tiled_url, api_key, None
+    return tiled_url, None, None
 
 
 def _default_prefix():
@@ -80,9 +80,9 @@ class RixsRunBinder:
                 if c.MD_KEY not in doc:
                     return  # not a rixs run; stay quiet on the bus
                 uid = doc["uid"]
-                tiled_url, api_key, _ = self._get_creds()
+                tiled_url = self._get_creds()[0]
                 self._client.bind_run(
-                    uid, tiled_url=tiled_url, tiled_api_key=api_key,
+                    uid, tiled_url=tiled_url,
                     lightfall_prefix=self._get_prefix())
                 self._bound_uid = uid
                 self._client.last_bound_uid = uid

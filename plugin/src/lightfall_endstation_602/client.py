@@ -74,14 +74,14 @@ class RixsServiceClient(QObject):
             return None
         return reply
 
-    def bind_run(self, run_uid: str, tiled_url: str = "", tiled_api_key=None,
+    def bind_run(self, run_uid: str, tiled_url: str = "",
                  lightfall_prefix: str = "") -> None:
+        """Publish rixs.run.bind. Never carries a Tiled API key (public subject)."""
         if self._ipc is None:
             return
         self._ipc.publish(c.SUBJ_BIND, {
             "run_uid": run_uid,
             "tiled_url": tiled_url,
-            "tiled_api_key": tiled_api_key,
             "lightfall_prefix": lightfall_prefix,
             "contract_version": c.CONTRACT_VERSION,
         })

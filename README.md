@@ -86,12 +86,12 @@ Two scripts live outside git under
    `ipc_topic_prefix` (Preferences; default `als.7011`, use whatever your
    Lightfall shows) and the spectrometer dispersion in meV/px:
    `rixs-live/.venv/Scripts/rixs-live run --nats-url nats://127.0.0.1:4222 --lightfall-prefix <ipc_topic_prefix> --dispersion 2.5`
-   Tiled is whatever Lightfall is configured for: the plugin sends the Tiled
-   URL and API key to the service in each `rixs.run.bind` message.
-   **Warning:** `rixs.run.bind` is a public subject, so the Tiled API key in it
-   is readable by anyone on the broker. That is acceptable on a local demo
-   broker only. Before using a shared or facility broker, drop the key from the
-   bind and rely on the service's private auth handshake for Tiled credentials.
+   Tiled is whatever Lightfall is configured for: the plugin sends only the Tiled
+   URL in `rixs.run.bind`. The API key never travels on that public subject; the
+   service gets it from the private auth handshake with Lightfall. On a local
+   broker without the auth callout, pass `--tiled-api-key <key>` (or set
+   `RIXS_LIVE_TILED_API_KEY`), and `--tiled-url` if needed; pass nothing for a
+   Tiled that allows anonymous reads.
    An empty `app_version` in `rixs_service_status` is expected for an editable install.
 3. **Backend.** Start Lightfall and enable the `qerlin_sim` device backend
    (Settings -> Devices; the preference is `device_plugin_qerlin_sim_enabled`). Check that `sm3_pitch`, `mono_energy` and `marana`

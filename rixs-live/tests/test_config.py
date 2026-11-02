@@ -33,3 +33,20 @@ def test_cli_run_wires_config(monkeypatch):
     assert captured["cfg"].nats.url == "nats://x:4222"
     assert captured["cfg"].nats.lightfall_prefix == "als.dev"
     assert captured["cfg"].dispersion_mev_per_px == 2.5
+
+
+def test_load_config_tiled_overrides():
+    cfg = load_config(None, tiled_url="http://t", tiled_api_key="k")
+    assert (cfg.tiled.url, cfg.tiled.api_key) == ("http://t", "k")
+
+
+def test_cli_tiled_options_and_env(monkeypatch):
+    captured = {}
+    monkeypatch.setattr("rixs_live.cli._run_service",
+                        lambda cfg: captured.__setitem__("cfg", cfg))
+    r = CliRunner().invoke(main, ["run", "--tiled-url", "http://t", "--tiled-api-key", "k1"])
+    assert r.exit_code == 0, r.output
+    assert (captured["cfg"].tiled.url, captured["cfg"].tiled.api_key) == ("http://t", "k1")
+    r = CliRunner().invoke(main, ["run"], env={"RIXS_LIVE_TILED_API_KEY": "envkey"})
+    assert r.exit_code == 0, r.output
+    assert captured["cfg"].tiled.api_key == "envkey"

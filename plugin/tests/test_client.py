@@ -4,9 +4,9 @@ from lightfall_endstation_602.client import RixsServiceClient
 
 def test_bind_payload(fake_ipc):
     cl = RixsServiceClient(ipc=fake_ipc)
-    cl.bind_run("u1", tiled_url="http://t", tiled_api_key="k", lightfall_prefix="als.602")
+    cl.bind_run("u1", tiled_url="http://t", lightfall_prefix="als.602")
     assert fake_ipc.published == [(c.SUBJ_BIND, {
-        "run_uid": "u1", "tiled_url": "http://t", "tiled_api_key": "k",
+        "run_uid": "u1", "tiled_url": "http://t",
         "lightfall_prefix": "als.602", "contract_version": c.CONTRACT_VERSION})]
 
 
