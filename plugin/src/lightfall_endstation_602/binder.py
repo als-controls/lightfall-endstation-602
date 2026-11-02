@@ -31,12 +31,22 @@ def _default_credentials():
     return tiled_url, None, None
 
 
+def _lightfall_default_prefix() -> str:
+    """Lightfall's own default topic prefix (the fallback must agree with it)."""
+    try:
+        from lightfall.ipc.defaults import DEFAULT_IPC_TOPIC_PREFIX
+        return DEFAULT_IPC_TOPIC_PREFIX
+    except Exception:
+        return "als.7011"
+
+
 def _default_prefix():
+    fallback = _lightfall_default_prefix()
     try:
         from lightfall.ui.preferences.manager import PreferencesManager
-        return PreferencesManager.get_instance().get("ipc_topic_prefix", "als.602")
+        return PreferencesManager.get_instance().get("ipc_topic_prefix", fallback)
     except Exception:
-        return "als.602"
+        return fallback
 
 
 class RixsRunBinder:

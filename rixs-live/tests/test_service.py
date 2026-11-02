@@ -599,3 +599,22 @@ def test_credentials_config_fallback_and_none():
     svc = _service(FakeNats(), None, tiled={"url": "http://cfg", "api_key": "cfgkey"})
     assert svc._resolve_credentials({}) == ("http://cfg", "cfgkey")
     assert _service(FakeNats(), None)._resolve_credentials({}) == ("", None)
+
+
+async def test_bind_prefix_mismatch_logged_once(stub_score):
+    from loguru import logger
+    pos = [-0.4, 0.0, 0.4]
+    fake, tiled = FakeNats(), FakeTiled()
+    _add_run(tiled, "runA", _parabola_frames(pos), pos)
+    svc = _service(fake, tiled)
+    msgs = []
+    sink = logger.add(lambda m: msgs.append(m.record["message"]), level="WARNING")
+    try:
+        await svc._handle_bind({**_bind("runA"), "lightfall_prefix": "als.602"}, None)
+        await svc._handle_bind({**_bind("runA"), "lightfall_prefix": "als.602"}, None)
+        await svc._handle_bind({**_bind("runA"), "lightfall_prefix": svc._config.nats.lightfall_prefix}, None)
+    finally:
+        logger.remove(sink)
+    mism = [m for m in msgs if "differs" in m]
+    assert len(mism) == 1 and "als.602" in mism[0]
+    assert fake.on(SUBJ_ERROR) == []  # still binds fine

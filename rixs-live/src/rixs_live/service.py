@@ -34,6 +34,7 @@ class RixsLiveService:
         self._nats = nats_client or NatsClient(config.nats)
         self._tiled_connect = tiled_connect or connect_tiled
         self._warned_bind_key = False
+        self._warned_prefix: str | None = None
         self._poll_task: asyncio.Task | None = None
         # dict: run_uid, reader, info, total, next, frames (per-frame payloads), stop (Event)
         self._current: dict | None = None
@@ -113,6 +114,20 @@ class RixsLiveService:
         key = cached.get("tiled_token") or self._config.tiled.api_key
         return url, key
 
+    def _check_bind_prefix(self, data: dict) -> None:
+        """Log once per distinct value when the bind's prefix differs from ours.
+
+        The service only uses its own ``lightfall_prefix`` (for auth); a mismatch
+        usually means the service is pointed at a different facility than Lightfall.
+        """
+        prefix = data.get("lightfall_prefix")
+        mine = self._config.nats.lightfall_prefix
+        if prefix and prefix != mine and prefix != self._warned_prefix:
+            self._warned_prefix = prefix
+            logger.warning(f"bind lightfall_prefix {prefix!r} differs from this service's "
+                           f"--lightfall-prefix {mine!r}; auth/subjects use the service's "
+                           f"value (check for a misconfigured prefix)")
+
     async def _status(self, cur: dict, state: str) -> None:
         await self._nats.publish(SUBJ_STATUS, {
             "run_uid": cur["run_uid"], "state": state,
@@ -154,6 +169,7 @@ class RixsLiveService:
             if version != CONTRACT_VERSION:
                 raise ValueError(
                     f"contract_version {version} != {CONTRACT_VERSION}; refusing bind")
+            self._check_bind_prefix(data)
             url, key = self._resolve_credentials(data)
             loop = asyncio.get_running_loop()
             tiled_client = await loop.run_in_executor(None, self._tiled_connect, url, key)

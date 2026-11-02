@@ -101,3 +101,13 @@ def test_listener_exception_does_not_break_enable(fake_ipc):
     b.add_listener(lambda enabled: 1 / 0)
     b.enable()
     assert b.enabled
+
+
+def test_default_prefix_matches_lightfall_default(monkeypatch):
+    from lightfall.ipc.defaults import DEFAULT_IPC_TOPIC_PREFIX
+    from lightfall_endstation_602 import binder as bmod
+
+    # no preference stored (or no manager): fall back to Lightfall's own default
+    monkeypatch.setitem(__import__("sys").modules, "lightfall.ui.preferences.manager", None)
+    assert bmod._default_prefix() == DEFAULT_IPC_TOPIC_PREFIX
+    assert DEFAULT_IPC_TOPIC_PREFIX != "als.602"
