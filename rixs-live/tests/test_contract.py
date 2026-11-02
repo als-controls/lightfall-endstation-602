@@ -7,7 +7,7 @@ from rixs_live.contract import RixsRunInfo, parse_start_rixs
 
 def _doc(**over):
     md = {
-        "contract_version": 1,
+        "contract_version": contract.CONTRACT_VERSION,
         "kind": "zeroth_order_focus",
         "image_field": "marana_image",
         "motor_field": "sm3_pitch",
@@ -30,7 +30,7 @@ def test_parse_absent_returns_none():
 
 def test_parse_bad_version_raises():
     with pytest.raises(ValueError):
-        parse_start_rixs("u1", _doc(contract_version=2))
+        parse_start_rixs("u1", _doc(contract_version=99))
     with pytest.raises(ValueError):
         parse_start_rixs("u1", _doc(kind="other"))
     bad = _doc()
@@ -44,5 +44,6 @@ def test_parse_bad_version_raises():
 def test_subjects_match_plugin():
     names = [n for n in dir(contract) if n.startswith("SUBJ_")] + ["MD_KEY", "CONTRACT_VERSION"]
     assert len([n for n in names if n.startswith("SUBJ_")]) == 8
+    assert contract.CONTRACT_VERSION == 2
     for n in names:
         assert getattr(contract, n) == getattr(plugin_contract, n), n

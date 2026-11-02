@@ -7,6 +7,7 @@ from lightfall_endstation_602.sim.model import FocusModel, render_frame
 
 from rixs_live.config import AppConfig
 from rixs_live.contract import (
+    CONTRACT_VERSION,
     SUBJ_BIND,
     SUBJ_COMPLETE,
     SUBJ_DISCOVER,
@@ -97,7 +98,7 @@ class FakeTiled:
 
 
 def _rixs_md(shape, **over):
-    md = {"contract_version": 1, "kind": "zeroth_order_focus",
+    md = {"contract_version": CONTRACT_VERSION, "kind": "zeroth_order_focus",
           "image_field": "marana_image", "motor_field": "sm3_pitch",
           "frame_shape": list(shape), "mono_energy_ev": 850.0}
     md.update(over)
@@ -116,12 +117,13 @@ def _add_run(tiled, uid, frames, positions, table_order=None, **md_over):
 def _service(fake, tiled_fake, **cfg_over):
     cfg = AppConfig(**{"poll_interval_s": 0.01, "bind_lookup_timeout_s": 0.3,
                        "drain_settle_s": 0.2, "drain_timeout_s": 2.0, **cfg_over})
-    return RixsLiveService(cfg, nats_client=fake, tiled_connect=lambda url, key: tiled_fake)
+    return RixsLiveService(cfg, nats_client=fake,
+                           tiled_connect=lambda url, key, proxy=None: tiled_fake)
 
 
 def _bind(uid):
     return {"run_uid": uid, "tiled_url": "http://local",
-            "lightfall_prefix": "als.7011", "contract_version": 1}
+            "lightfall_prefix": "als.7011", "contract_version": CONTRACT_VERSION}
 
 
 async def _until(pred, timeout=30.0):

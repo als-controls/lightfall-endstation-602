@@ -39,7 +39,7 @@ def test_binder_bind_and_stop(fake_ipc):
     cb = re.subscribe.call_args[0][0]
     cb("start", _start())
     assert fake_ipc.published == [(c.SUBJ_BIND, {
-        "run_uid": "runX", "tiled_url": "http://t",
+        "run_uid": "runX", "tiled_url": "http://t", "tiled_proxy": None,
         "lightfall_prefix": "als.602", "contract_version": c.CONTRACT_VERSION})]
     assert b._client.last_bound_uid == "runX"
     cb("stop", {"run_start": "runX"})
@@ -122,3 +122,59 @@ def test_stop_forwards_exit_status_and_num_events(fake_ipc):
                 "num_events": {"primary": 3}})
     assert (c.SUBJ_STOP, {"run_uid": "runX", "exit_status": "abort",
                           "num_events": {"primary": 3}}) in fake_ipc.published
+
+
+def test_bind_carries_lightfall_tiled_proxy(fake_ipc):
+    client = RixsServiceClient(ipc=fake_ipc)
+    re = MagicMock()
+    asked = []
+    b = RixsRunBinder(client, run_engine_getter=lambda: re,
+                      credentials_getter=lambda: ("http://t", None, None),
+                      prefix_getter=lambda: "als.602",
+                      proxy_getter=lambda url: asked.append(url) or "socks5://localhost:1080")
+    b.enable()
+    re.subscribe.call_args[0][0]("start", _start())
+    assert asked == ["http://t"]
+    assert fake_ipc.published[0][1]["tiled_proxy"] == "socks5://localhost:1080"
+
+
+def test_bind_proxy_lookup_failure_sends_null(fake_ipc):
+    client = RixsServiceClient(ipc=fake_ipc)
+    re = MagicMock()
+
+    def boom(url):
+        raise RuntimeError("no proxy settings")
+
+    b = RixsRunBinder(client, run_engine_getter=lambda: re,
+                      credentials_getter=lambda: ("http://t", None, None),
+                      prefix_getter=lambda: "als.602", proxy_getter=boom)
+    b.enable()
+    re.subscribe.call_args[0][0]("start", _start())
+    (subject, payload), = fake_ipc.published
+    assert subject == c.SUBJ_BIND and payload["tiled_proxy"] is None
+
+
+def test_default_proxy_uses_tiled_service_lookup(monkeypatch):
+    import sys
+    import types
+    from lightfall_endstation_602 import binder as bm
+
+    class TiledService:
+        @staticmethod
+        def _get_proxy_url(url):
+            return "socks5://localhost:1080" if "lbl.gov" in url else None
+
+    mod = types.ModuleType("lightfall.services.tiled_service")
+    mod.TiledService = TiledService
+    monkeypatch.setitem(sys.modules, "lightfall.services.tiled_service", mod)
+    assert bm._default_proxy("http://bcgtiled.dhcp.lbl.gov:8000") == "socks5://localhost:1080"
+    assert bm._default_proxy("http://localhost:8000") is None
+    assert bm._default_proxy("") is None
+
+    def boom(url):
+        raise RuntimeError("preferences not ready")
+
+    TiledService._get_proxy_url = staticmethod(boom)
+    assert bm._default_proxy("http://x.lbl.gov") is None
+    del TiledService._get_proxy_url  # older Lightfall without the helper
+    assert bm._default_proxy("http://x.lbl.gov") is None

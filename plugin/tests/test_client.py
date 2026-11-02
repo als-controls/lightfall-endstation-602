@@ -6,7 +6,7 @@ def test_bind_payload(fake_ipc):
     cl = RixsServiceClient(ipc=fake_ipc)
     cl.bind_run("u1", tiled_url="http://t", lightfall_prefix="als.602")
     assert fake_ipc.published == [(c.SUBJ_BIND, {
-        "run_uid": "u1", "tiled_url": "http://t",
+        "run_uid": "u1", "tiled_url": "http://t", "tiled_proxy": None,
         "lightfall_prefix": "als.602", "contract_version": c.CONTRACT_VERSION})]
 
 

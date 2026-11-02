@@ -341,3 +341,10 @@ def test_health_check_does_not_block_gui_thread(qtbot, fake_ipc):
     assert time.monotonic() - t0 < 0.5
     qtbot.waitUntil(lambda: p._state_label.text() == "service: not responding",
                     timeout=4000)
+
+
+def test_tiled_connect_error_shown_in_status_line(panel):
+    err = ("cannot connect to Tiled at http://bcgtiled.dhcp.lbl.gov:8000 using no proxy: "
+           "ConnectTimeout: timed out. Check the proxy")
+    panel.test_ipc.emit(c.SUBJ_ERROR, {"run_uid": "u", "error": err})
+    assert panel._status_label.text() == f"error: {err}"

@@ -21,7 +21,7 @@ from rixs_live.contract import (
 )
 from rixs_live.focus import fit_focus_curve, make_preview, score_frame
 from rixs_live.nats_client import NatsClient
-from rixs_live.tiled_io import FocusRunReader, connect_tiled
+from rixs_live.tiled_io import FocusRunReader, connect_tiled, env_proxy, redact_proxy
 
 EVENTS = [SUBJ_STATUS, SUBJ_ERROR, SUBJ_FRAME, SUBJ_COMPLETE]
 ACTIONS = [SUBJ_RESULT]
@@ -186,8 +186,14 @@ class RixsLiveService:
                     f"contract_version {version} != {CONTRACT_VERSION}; refusing bind")
             self._check_bind_prefix(data)
             url, key = self._resolve_credentials(data)
+            proxy = data.get("tiled_proxy")
+            proxy = proxy if isinstance(proxy, str) and proxy else None
             loop = asyncio.get_running_loop()
-            tiled_client = await loop.run_in_executor(None, self._tiled_connect, url, key)
+            try:
+                tiled_client = await loop.run_in_executor(
+                    None, self._tiled_connect, url, key, proxy)
+            except Exception as ex:
+                raise RuntimeError(self._tiled_connect_error(url, proxy, ex)) from ex
             run = await self._lookup_run(tiled_client, run_uid)
             start = run.metadata.get("start", {})
             info = parse_start_rixs(run_uid, start)
@@ -212,6 +218,22 @@ class RixsLiveService:
         except Exception as ex:
             logger.exception(f"bind failed for {run_uid}")
             await self._nats.publish(SUBJ_ERROR, {"run_uid": run_uid, "error": str(ex)})
+
+    @staticmethod
+    def _tiled_connect_error(url: str, proxy: str | None, ex: Exception) -> str:
+        """rixs.error text for a failed Tiled connect: URL, proxy used, what to check."""
+        env = env_proxy()
+        if proxy:
+            via = f"proxy {redact_proxy(proxy)} (from Lightfall)"
+        elif env is not None:
+            via = f"proxy {redact_proxy(env)} (from the service environment)"
+        else:
+            via = "no proxy"
+        target = url or "<no Tiled URL>"
+        return (f"cannot connect to Tiled at {target} using {via}: "
+                f"{type(ex).__name__}: {ex}. Check the proxy: Lightfall's proxy "
+                f"preferences are sent with each bind, and ALL_PROXY/HTTPS_PROXY in "
+                f"rixs-live's environment are used when the bind has none")
 
     async def _score_new(self, cur: dict, *, drain: bool = False) -> int:
         """Score and publish every frame not yet seen; returns how many were new.

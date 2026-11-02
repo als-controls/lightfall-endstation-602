@@ -148,13 +148,18 @@ class RixsServiceClient(QObject):
         return reply
 
     def bind_run(self, run_uid: str, tiled_url: str = "",
-                 lightfall_prefix: str = "") -> None:
-        """Publish rixs.run.bind. Never carries a Tiled API key (public subject)."""
+                 lightfall_prefix: str = "", tiled_proxy: str | None = None) -> None:
+        """Publish rixs.run.bind. Never carries a Tiled API key (public subject).
+
+        ``tiled_proxy`` is the proxy Lightfall uses for ``tiled_url`` (or None), so
+        the service reaches the same Tiled without configuring the proxy twice.
+        """
         if self._ipc is None:
             return
         self._ipc.publish(c.SUBJ_BIND, {
             "run_uid": run_uid,
             "tiled_url": tiled_url,
+            "tiled_proxy": tiled_proxy or None,
             "lightfall_prefix": lightfall_prefix,
             "contract_version": c.CONTRACT_VERSION,
         })

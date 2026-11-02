@@ -92,13 +92,27 @@ Two scripts live outside git under
    broker without the auth callout, pass `--tiled-api-key <key>` (or set
    `RIXS_LIVE_TILED_API_KEY`), and `--tiled-url` if needed; pass nothing for a
    Tiled that allows anonymous reads.
+   **Proxy.** Nothing to configure: each bind also carries `tiled_proxy`, the
+   proxy Lightfall itself uses for that Tiled URL (Preferences -> Network Proxy, e.g.
+   `socks5://localhost:1080` for `*.lbl.gov`), and the service connects through
+   it. When the bind carries no proxy, `ALL_PROXY` / `HTTPS_PROXY` in the
+   service's environment are still honoured (socksio is installed for SOCKS). If
+   the service cannot reach Tiled, the panel's status line shows the `rixs.error`
+   text, which names the Tiled URL and the proxy used (or "no proxy").
+   The service reconnects to NATS on its own after a broker restart; if the
+   connection is ever closed for good it exits with status 1 so a supervisor
+   can restart it.
    An empty `app_version` in `rixs_service_status` is expected for an editable install.
 3. **Backend.** Start Lightfall and enable the `qerlin_sim` device backend
    (Settings -> Devices; the preference is `device_plugin_qerlin_sim_enabled`). Check that `sm3_pitch`, `mono_energy` and `marana`
    appear.
 4. **Panel.** Open the "QERLIN Focus" panel (Analysis). Its title-bar toggle
    is on by default; the status line should read "bound: waiting for a
-   qerlin_focus_scan run" once the RunEngine is up.
+   qerlin_focus_scan run" once the RunEngine is up. The right-hand health
+   indicator checks rixs-live every ~10 s (off the GUI thread): "service: not
+   responding" means discovery got no answer, and a scan started meanwhile reads
+   "run <uid> not analysed: rixs-live not responding". `rixs_service_status`
+   reports the same state.
 5. **Plan from the UI.** Run `qerlin_focus_scan` once (devices marana, sm3,
    mono; defaults -1..1 mrad, 21 points). The left plot fills with FWHM vs
    pitch, the right shows the zeroth-order preview with its fitted line, and

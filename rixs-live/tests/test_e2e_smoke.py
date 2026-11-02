@@ -28,7 +28,14 @@ from tiled.client import Context, from_context
 from tiled.server.app import build_app
 
 from rixs_live.config import AppConfig
-from rixs_live.contract import SUBJ_BIND, SUBJ_COMPLETE, SUBJ_ERROR, SUBJ_FRAME, SUBJ_STOP
+from rixs_live.contract import (
+    CONTRACT_VERSION,
+    SUBJ_BIND,
+    SUBJ_COMPLETE,
+    SUBJ_ERROR,
+    SUBJ_FRAME,
+    SUBJ_STOP,
+)
 from rixs_live.service import RixsLiveService
 
 BEST = 0.3  # hidden best SM3 pitch (mrad), fixed via an explicit FocusModel
@@ -137,7 +144,8 @@ def _run_scan(writer_client, loop, nc, timings, async_writer=False):
         if name == "start":
             publish(SUBJ_BIND, {"run_uid": doc["uid"], "tiled_url": "http://in-memory",
                                 "lightfall_prefix": "als.7011",
-                                "contract_version": 1})
+                                "tiled_proxy": None,
+                                "contract_version": CONTRACT_VERSION})
         elif name == "stop":
             timings["scan_done"] = time.monotonic()
             publish(SUBJ_STOP, {"run_uid": doc["run_start"]})
@@ -165,7 +173,7 @@ async def _smoke(nats_url, tiled_app, async_writer):
         cfg = AppConfig(poll_interval_s=0.1, dispersion_mev_per_px=2.5,
                         tiled={"url": "http://in-memory", "api_key": "k"})
         cfg.nats.url = nats_url
-        svc = RixsLiveService(cfg, tiled_connect=lambda url, key: svc_client)
+        svc = RixsLiveService(cfg, tiled_connect=lambda url, key, proxy=None: svc_client)
         await svc._nats.connect()
         await svc._register_subscriptions()
 

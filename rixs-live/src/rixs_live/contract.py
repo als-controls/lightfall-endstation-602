@@ -6,10 +6,13 @@ from dataclasses import dataclass
 
 from loguru import logger
 
-CONTRACT_VERSION = 1
+CONTRACT_VERSION = 2  # 2: rixs.run.bind carries tiled_proxy (str | None)
 MD_KEY = "rixs"
 KIND_ZEROTH = "zeroth_order_focus"
 SUBJ_BIND, SUBJ_STOP = "rixs.run.bind", "rixs.run.stop"
+# bind: {run_uid, tiled_url, tiled_proxy, lightfall_prefix, contract_version};
+# tiled_proxy is the proxy Lightfall itself uses for tiled_url (e.g.
+# "socks5://localhost:1080") or None. Never an API key: the subject is public.
 SUBJ_STATUS, SUBJ_ERROR = "rixs.status", "rixs.error"
 SUBJ_FRAME, SUBJ_COMPLETE = "rixs.zeroth.frame", "rixs.zeroth.complete"
 # request/reply: {"run_uid"} -> complete payload | {"error"}

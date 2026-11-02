@@ -31,6 +31,24 @@ def _default_credentials():
     return tiled_url, None, None
 
 
+def _default_proxy(tiled_url: str) -> str | None:
+    """The proxy Lightfall's TiledService would use for ``tiled_url``, else None.
+
+    Called defensively: any missing API or failure means "no proxy", and the
+    service still honours ALL_PROXY / HTTPS_PROXY from its own environment.
+    """
+    if not tiled_url:
+        return None
+    try:
+        from lightfall.services.tiled_service import TiledService
+        getter = getattr(TiledService, "_get_proxy_url", None)
+        proxy = getter(tiled_url) if callable(getter) else None
+    except Exception as ex:
+        logger.debug(f"tiled proxy lookup failed: {ex!r}")
+        return None
+    return proxy if isinstance(proxy, str) and proxy else None
+
+
 def _lightfall_default_prefix() -> str:
     """Lightfall's own default topic prefix (the fallback must agree with it)."""
     try:
@@ -56,11 +74,13 @@ class RixsRunBinder:
         run_engine_getter: Callable = _default_run_engine,
         credentials_getter: Callable = _default_credentials,
         prefix_getter: Callable = _default_prefix,
+        proxy_getter: Callable[[str], str | None] = _default_proxy,
     ) -> None:
         self._client = client
         self._get_re = run_engine_getter
         self._get_creds = credentials_getter
         self._get_prefix = prefix_getter
+        self._get_proxy = proxy_getter
         self._token = None
         self._re = None
         self._bound_uid: str | None = None
@@ -112,9 +132,14 @@ class RixsRunBinder:
                     return  # not a rixs run; stay quiet on the bus
                 uid = doc["uid"]
                 tiled_url = self._get_creds()[0]
+                try:
+                    proxy = self._get_proxy(tiled_url)
+                except Exception as ex:
+                    logger.debug(f"tiled proxy lookup failed: {ex!r}")
+                    proxy = None
                 self._client.bind_run(
                     uid, tiled_url=tiled_url,
-                    lightfall_prefix=self._get_prefix())
+                    lightfall_prefix=self._get_prefix(), tiled_proxy=proxy)
                 self._bound_uid = uid
                 self._client.last_bound_uid = uid
             elif name == "stop":
