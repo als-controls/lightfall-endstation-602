@@ -56,6 +56,7 @@ class QerlinFocusPanel(BasePanel):
     )
 
     RETRY_MS = 1000
+    NOT_RESPONDING = "rixs-live not responding"
 
     def __init__(self, parent: QWidget | None = None, client=None, binder=None) -> None:
         # attrs before super().__init__: BasePanel.__init__ calls _setup_ui()
@@ -66,6 +67,8 @@ class QerlinFocusPanel(BasePanel):
         self._client = client
         self._binder = binder
         self._run_uid: str | None = None
+        self._pending_uid: str | None = None  # bound, no rixs.zeroth.complete yet
+        self._down_text: str | None = None  # status text we set for a down service
         self._xs: list[float] = []
         self._ys: list[float] = []
         super().__init__(parent)
@@ -73,6 +76,8 @@ class QerlinFocusPanel(BasePanel):
         self._client.scanComplete.connect(self._on_complete)
         self._client.statusChanged.connect(self._on_status)
         self._client.errorReceived.connect(self._on_error)
+        self._client.healthChanged.connect(self._on_health)
+        self._client.bindSent.connect(self._on_bind_sent)
         # Default on, so the demo needs no clicks. The RunEngine is created when
         # the engine thread starts, which can be after this panel is built, so a
         # failed first enable keeps the toggle armed and retries once a second.
@@ -85,6 +90,10 @@ class QerlinFocusPanel(BasePanel):
         self._binder_listener = self._on_binder_changed
         self._binder.add_listener(self._binder_listener)
         self._retry_enable()
+        # discover() every ~10 s in a worker; results land on the GUI thread.
+        self._client.start_health_monitor()
+        if self._client.service_up is False:
+            self._on_health(False)
 
     # -- UI -----------------------------------------------------------------
     def _setup_ui(self) -> None:
@@ -180,6 +189,37 @@ class QerlinFocusPanel(BasePanel):
             self._enable_toggle.setChecked(bool(self._binder.enabled))
             self._enable_toggle.blockSignals(False)
 
+    # -- service health -------------------------------------------------------
+    def _short(self, uid: str) -> str:
+        return uid[:8]
+
+    def _show_down(self) -> None:
+        self._state_label.setText("service: not responding")
+        if self._pending_uid:
+            text = f"run {self._short(self._pending_uid)} not analysed: {self.NOT_RESPONDING}"
+        else:
+            text = f"{self.NOT_RESPONDING} (start it with: rixs-live run --nats-url ...)"
+        self._down_text = text
+        self._status_label.setText(text)
+
+    def _on_health(self, up: bool) -> None:
+        if not up:
+            self._show_down()
+            return
+        if self._state_label.text() == "service: not responding":
+            self._state_label.setText("service: idle")
+        if self._down_text is not None and self._status_label.text() == self._down_text:
+            self._status_label.setText("rixs-live responding again")
+        self._down_text = None
+
+    def _on_bind_sent(self, run_uid: str) -> None:
+        """A rixs.run.bind went out (queued here from the RunEngine thread)."""
+        self._pending_uid = run_uid or None
+        if self._client.service_up is False:
+            self._show_down()
+        # The publish has no ack: re-check now so a lost bind shows up at once.
+        self._client.check_health_async()
+
     # -- events ---------------------------------------------------------------
     def _start_run(self, run_uid) -> None:
         if run_uid == self._run_uid:
@@ -234,6 +274,8 @@ class QerlinFocusPanel(BasePanel):
 
     def _on_complete(self, data: dict) -> None:
         self._start_run(data.get("run_uid"))
+        if data.get("run_uid") == self._pending_uid:
+            self._pending_uid = None
         points = [p for p in data.get("points") or []
                   if p.get("score_valid") and _num(p.get("position")) is not None
                   and _num(p.get("fwhm_px")) is not None]

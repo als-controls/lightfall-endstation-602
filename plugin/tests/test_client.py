@@ -77,3 +77,42 @@ def test_no_ipc_is_safe():
     cl.run_stop("u")
     assert cl.discover() is None
     assert cl.get_result("u") is None
+
+
+def test_record_health_emits_only_on_change(fake_ipc, qtbot):
+    cl = RixsServiceClient(ipc=fake_ipc)
+    seen = []
+    cl.healthChanged.connect(seen.append)
+    assert cl.service_up is None
+    cl.record_health({"app_name": "rixs-live"})
+    cl.record_health({"app_name": "rixs-live"})
+    cl.record_health(None)
+    assert seen == [True, False]
+    assert cl.service_up is False and cl.service_info is None
+    assert cl.health_checked_at is not None
+
+
+def test_check_health_async_runs_discover_off_gui_thread(fake_ipc, qtbot):
+    import threading
+    threads = []
+
+    class IPC(type(fake_ipc)):
+        def request(self, subject, data, timeout_ms=1000):
+            threads.append(threading.get_ident())
+            return {"app_name": "rixs-live"}
+
+    cl = RixsServiceClient(ipc=IPC())
+    cl.start_health_monitor(interval_ms=60_000)
+    cl.start_health_monitor()  # idempotent
+    qtbot.waitUntil(lambda: cl.service_up is True, timeout=3000)
+    assert threads and threads[0] != threading.get_ident()
+    assert cl.service_info == {"app_name": "rixs-live"}
+    cl.stop_health_monitor()
+
+
+def test_bind_emits_bind_sent(fake_ipc, qtbot):
+    cl = RixsServiceClient(ipc=fake_ipc)
+    seen = []
+    cl.bindSent.connect(seen.append)
+    cl.bind_run("u1")
+    assert seen == ["u1"]

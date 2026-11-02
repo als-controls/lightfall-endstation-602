@@ -154,6 +154,10 @@ class QerlinFocusingTools(ToolPlugin):
             try:
                 client, binder_enabled = _on_main(_prepare_status)
                 reply = await asyncio.to_thread(client.discover, 2000)
+                # Same state the QERLIN Focus panel shows: record the fresh result.
+                record = getattr(client, "record_health", None)
+                if record is not None:
+                    _on_main(lambda: record(reply))
                 return mcp_result(_status_payload(reply, binder_enabled))
             except Exception as ex:  # noqa: BLE001 - surface to the agent
                 return mcp_error(f"rixs service status failed: {ex}")

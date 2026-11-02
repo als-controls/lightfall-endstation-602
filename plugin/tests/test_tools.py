@@ -219,3 +219,16 @@ def test_wait_s_clamped():
     assert tools._wait_s(-5) == 0.0
     assert tools._wait_s(10_000) == tools.WAIT_MAX_S
     assert tools._wait_s(float("nan")) == tools.WAIT_DEFAULT_S
+
+
+def test_status_records_shared_health(plugin, monkeypatch):
+    """The tool's fresh discover lands in the client's health state the panel shows."""
+    recorded = []
+
+    class Client(FakeClient):
+        def record_health(self, reply):
+            recorded.append(reply)
+
+    monkeypatch.setattr(runtime, "get_client", lambda: Client(discover=None))
+    out = _payload(asyncio.run(_tool(plugin, "rixs_service_status")({})))
+    assert out["service_up"] is False and recorded == [None]

@@ -19,6 +19,7 @@ def _frame(pos, fwhm, valid=True, reason=None, preview=None, centroid=None, angl
 
 @pytest.fixture
 def panel(qtbot, fake_ipc):
+    fake_ipc.replies[c.SUBJ_DISCOVER] = {"app_name": "rixs-live"}  # healthy service
     client = RixsServiceClient(ipc=fake_ipc)
     binder = MagicMock()
     binder.enabled = False
@@ -267,3 +268,76 @@ def test_toggle_update_from_worker_thread(qtbot, fake_ipc):
     t.start()
     t.join()
     qtbot.waitUntil(lambda: not p._enable_toggle.isChecked(), timeout=2000)
+
+
+# ------------------------------------------------------------------ health
+
+
+def test_health_down_then_up(qtbot, fake_ipc):
+    client = RixsServiceClient(ipc=fake_ipc)  # no discover reply: service down
+    binder = MagicMock()
+    binder.enabled = True
+    p = QerlinFocusPanel(client=client, binder=binder)
+    qtbot.addWidget(p)
+    qtbot.waitUntil(lambda: p._state_label.text() == "service: not responding", timeout=3000)
+    assert client.service_up is False
+    assert "rixs-live not responding" in p._status_label.text()
+    fake_ipc.replies[c.SUBJ_DISCOVER] = {"app_name": "rixs-live"}
+    client.check_health_async()
+    qtbot.waitUntil(lambda: client.service_up is True, timeout=3000)
+    assert p._state_label.text() == "service: idle"
+    assert p._status_label.text() == "rixs-live responding again"
+
+
+def test_bind_while_down_says_not_analysed(qtbot, panel):
+    client = panel._client
+    qtbot.waitUntil(lambda: client.service_up is True, timeout=3000)
+    client.record_health(None)
+    assert panel._state_label.text() == "service: not responding"
+    client.bind_run("abcdef1234-run", tiled_url="http://t")
+    qtbot.waitUntil(lambda: "not analysed" in panel._status_label.text(), timeout=2000)
+    assert panel._status_label.text() == (
+        "run abcdef12 not analysed: rixs-live not responding")
+
+
+def test_bind_from_run_engine_thread_reaches_panel(qtbot, fake_ipc):
+    import threading
+    client = RixsServiceClient(ipc=fake_ipc)  # down
+    binder = MagicMock()
+    binder.enabled = True
+    p = QerlinFocusPanel(client=client, binder=binder)
+    qtbot.addWidget(p)
+    qtbot.waitUntil(lambda: client.service_up is False, timeout=3000)
+    t = threading.Thread(target=client.bind_run, args=("worker-run-uid",))
+    t.start()
+    t.join()
+    qtbot.waitUntil(lambda: "run worker-r not analysed" in p._status_label.text(),
+                    timeout=2000)
+
+
+def test_complete_clears_pending_bind(qtbot, panel):
+    panel._client.bind_run("u")
+    assert panel._pending_uid == "u"
+    panel.test_ipc.emit(c.SUBJ_COMPLETE, {"run_uid": "u", "points": [], "fit": {}})
+    assert panel._pending_uid is None
+    panel._client.record_health(None)
+    assert "rixs-live not responding (start it" in panel._status_label.text()
+
+
+def test_health_check_does_not_block_gui_thread(qtbot, fake_ipc):
+    import time
+
+    class SlowIPC(type(fake_ipc)):
+        def request(self, subject, data, timeout_ms=1000):
+            time.sleep(1.0)
+            raise TimeoutError()
+
+    client = RixsServiceClient(ipc=SlowIPC())
+    binder = MagicMock()
+    binder.enabled = True
+    t0 = time.monotonic()
+    p = QerlinFocusPanel(client=client, binder=binder)
+    qtbot.addWidget(p)
+    assert time.monotonic() - t0 < 0.5
+    qtbot.waitUntil(lambda: p._state_label.text() == "service: not responding",
+                    timeout=4000)

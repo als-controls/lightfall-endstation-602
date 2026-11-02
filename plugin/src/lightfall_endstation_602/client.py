@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import time
+
 from loguru import logger
-from qtpy.QtCore import QObject, Signal
+from qtpy.QtCore import QObject, QTimer, Signal
 
 from lightfall_endstation_602 import contract as c
 
@@ -13,6 +15,13 @@ class RixsServiceClient(QObject):
     scanComplete = Signal(dict)
     statusChanged = Signal(dict)
     errorReceived = Signal(dict)
+    # True/False when the periodic discover() check flips the service state.
+    healthChanged = Signal(bool)
+    # Run uid of every rixs.run.bind sent; may be emitted from the RunEngine thread.
+    bindSent = Signal(str)
+
+    HEALTH_INTERVAL_MS = 10_000
+    HEALTH_TIMEOUT_MS = 2000
 
     def __init__(self, ipc=None, parent=None) -> None:
         super().__init__(parent)
@@ -27,6 +36,14 @@ class RixsServiceClient(QObject):
         self.last_complete: dict | None = None
         # Run uid of the most recent rixs.run.bind (set by RixsRunBinder).
         self.last_bound_uid: str | None = None
+        # Health of rixs-live, the one place the panel and the agent tools read it:
+        # None until the first check, then the result of the latest discover().
+        self.service_up: bool | None = None
+        self.service_info: dict | None = None
+        self.health_checked_at: float | None = None
+        self._health_timer: QTimer | None = None
+        self._health_pool = None
+        self._health_inflight = False
         if self._ipc is not None:
             self._ipc.subscribe(c.SUBJ_FRAME, self._on_frame)
             self._ipc.subscribe(c.SUBJ_COMPLETE, self._on_complete)
@@ -60,6 +77,62 @@ class RixsServiceClient(QObject):
     def discover(self, timeout_ms: int = 2000) -> dict | None:
         return self._request(c.SUBJ_DISCOVER, {}, timeout_ms)
 
+    # -- health ---------------------------------------------------------------
+    def record_health(self, reply: dict | None) -> None:
+        """GUI thread: store a discover() result; emits healthChanged when it flips."""
+        up = bool(reply)
+        changed = up != self.service_up
+        self.service_up = up
+        self.service_info = reply if up else None
+        self.health_checked_at = time.time()
+        if changed:
+            if not up:
+                logger.warning("rixs-live is not responding to discovery")
+            self.healthChanged.emit(up)
+
+    def start_health_monitor(self, interval_ms: int | None = None) -> None:
+        """GUI thread: check health now and every ``interval_ms`` (idempotent)."""
+        if self._health_timer is not None:
+            return
+        self._health_timer = QTimer(self)
+        self._health_timer.setInterval(interval_ms or self.HEALTH_INTERVAL_MS)
+        self._health_timer.timeout.connect(self.check_health_async)
+        self._health_timer.start()
+        self.check_health_async()
+
+    def stop_health_monitor(self) -> None:
+        if self._health_timer is not None:
+            self._health_timer.stop()
+            self._health_timer = None
+
+    def check_health_async(self) -> None:
+        """GUI thread: run discover() in a worker; the result is applied on the GUI thread.
+
+        discover() blocks for up to HEALTH_TIMEOUT_MS, so it must never run here.
+        """
+        if self._health_inflight:
+            return
+        from lightfall.utils.threads import ManagedThreadPool
+        if self._health_pool is None:
+            self._health_pool = ManagedThreadPool(max_workers=1, name="rixs-health")
+        self._health_inflight = True
+        try:
+            self._health_pool.submit(self._health_worker)
+        except RuntimeError:  # pool shut down (application quitting)
+            self._health_inflight = False
+
+    def _health_worker(self) -> None:
+        from lightfall.utils.threads import invoke_in_main_thread
+        reply = None
+        try:
+            reply = self.discover(self.HEALTH_TIMEOUT_MS)
+        finally:
+            invoke_in_main_thread(self._apply_health, reply)
+
+    def _apply_health(self, reply: dict | None) -> None:
+        self._health_inflight = False
+        self.record_health(reply)
+
     def get_result(self, run_uid: str, timeout_ms: int = 5000) -> dict | None:
         """The stored focus result for ``run_uid``.
 
@@ -85,6 +158,9 @@ class RixsServiceClient(QObject):
             "lightfall_prefix": lightfall_prefix,
             "contract_version": c.CONTRACT_VERSION,
         })
+        # A publish has no ack: listeners compare against service_up to report a
+        # bind that went to a service known to be down.
+        self.bindSent.emit(run_uid)
 
     def run_stop(self, run_uid: str, exit_status: str | None = None,
                  num_events: dict | None = None) -> None:
