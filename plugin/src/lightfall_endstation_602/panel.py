@@ -110,7 +110,9 @@ class QerlinFocusPanel(BasePanel):
         self._image_view.invertY(True)  # row 0 at the top, like the detector
         self._image_view.hideAxis("left")
         self._image_view.hideAxis("bottom")
-        self._image = pg.ImageItem()
+        # Pin the axis order: Lightfall sets pyqtgraph's global imageAxisOrder to
+        # 'row-major', so relying on the default (and transposing) flips the frame.
+        self._image = pg.ImageItem(axisOrder="row-major")
         self._line_curve = pg.PlotDataItem([], [], pen=pg.series_pen(2))
         self._image_view.addItem(self._image)
         self._image_view.addItem(self._line_curve)
@@ -193,8 +195,9 @@ class QerlinFocusPanel(BasePanel):
         if decoded is None:
             return
         img, scale = decoded
-        # ImageItem is column-major (x = column); transpose the row-major frame.
-        self._image.setImage(img.T, autoLevels=False, levels=(0, 255))
+        # Row-major ImageItem: x = column, y = row, matching the contract's
+        # centroid (x, y) and angle_deg (from +x toward +y, image coords).
+        self._image.setImage(img, autoLevels=False, levels=(0, 255))
         centroid = data.get("centroid")
         angle = _num(data.get("angle_deg"))
         if not centroid or angle is None:

@@ -132,3 +132,21 @@ def test_preview_non_divisible_shape():
     p = make_preview(img, max_side=256)
     assert max(p["shape"]) <= 256
     assert len(base64.b64decode(p["b64"])) == math.prod(p["shape"])
+
+
+@pytest.mark.parametrize("tilt_deg", [1.5, 6.0, -6.0])
+def test_centroid_and_angle_follow_contract(tilt_deg):
+    """Known-angle frame: centroid is (col, row) on the line; angle is from +x toward +y."""
+    model = FocusModel(best_pitch=BEST, angle_deg=tilt_deg)
+    s = score_frame(_frame(BEST, model), 0.0, None)
+    assert s.score_valid and s.centroid is not None and s.angle_deg is not None
+    h, w = SHAPE
+    # sim line passes through (x0, yc) with direction (sin t, cos t) in (col, row)
+    x0, yc = model.line_x_frac * w, 0.5 * h
+    t = math.radians(tilt_deg)
+    cx, cy = s.centroid
+    perp = (cx - x0) * math.cos(t) - (cy - yc) * math.sin(t)
+    assert abs(perp) < 5.0, f"centroid {s.centroid} is {perp:.1f}px off the line"
+    a = math.radians(s.angle_deg)
+    # direction parallel to (sin t, cos t), up to sign
+    assert abs(math.cos(a) * math.sin(t) + math.sin(a) * math.cos(t)) > math.cos(math.radians(1.0))

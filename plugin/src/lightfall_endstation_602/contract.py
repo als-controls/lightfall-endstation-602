@@ -11,6 +11,12 @@ SUBJ_FRAME, SUBJ_COMPLETE = "rixs.zeroth.frame", "rixs.zeroth.complete"
 # request/reply: {"run_uid"} -> complete payload | {"error"}
 SUBJ_RESULT = "rixs.zeroth.result"
 SUBJ_DISCOVER = "_rixs.discover"
+# Frame payload geometry (SUBJ_FRAME): ``centroid`` is [x, y] in full-resolution
+# detector pixels with x = column and y = row (row 0 = first row of the frame).
+# ``angle_deg`` is the line direction measured from +x toward +y in those image
+# coordinates, i.e. the direction vector is (cos, sin) in (column, row); a
+# near-vertical line reads ~ +/-90. ``preview`` is row-major uint8, shape [h, w],
+# block-downsampled by ``scale`` (full-res coord / scale = preview coord).
 
 
 def build_rixs_md(

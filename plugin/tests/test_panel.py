@@ -2,6 +2,7 @@ import base64
 from unittest.mock import MagicMock
 
 import numpy as np
+import pyqtgraph as pg
 import pytest
 
 from lightfall_endstation_602 import contract as c
@@ -131,13 +132,59 @@ def test_preview_decodes(panel):
                                               centroid=[8.0, 6.0], angle=0.0))
     shown = panel._image.image
     assert shown is not None
-    # image is displayed transposed (pyqtgraph x = column)
-    assert np.array_equal(np.asarray(shown).T, img)
+    # row-major ImageItem: data passed through as-is (x = column, y = row)
+    assert np.array_equal(np.asarray(shown), img)
     lx, ly = panel._line_curve.getData()
     assert len(lx) == 2
     # centroid (8,6) full-res -> (2,1.5) preview px; angle 0 -> horizontal line
     assert ly[0] == pytest.approx(1.5) and ly[1] == pytest.approx(1.5)
     assert min(lx) < 2.0 < max(lx)
+
+
+@pytest.fixture(params=["col-major", "row-major"])
+def global_axis_order(request):
+    # Lightfall sets this globally to row-major; the panel must not depend on it.
+    old = pg.getConfigOption("imageAxisOrder")
+    pg.setConfigOptions(imageAxisOrder=request.param)
+    yield request.param
+    pg.setConfigOptions(imageAxisOrder=old)
+
+
+@pytest.mark.parametrize("angle_deg", [88.5, 60.0, -30.0])
+def test_preview_line_overlays_known_angle_streak(qtbot, fake_ipc, global_axis_order, angle_deg):
+    """Line drawn from (centroid, angle_deg) must sit on the streak as displayed."""
+    client = RixsServiceClient(ipc=fake_ipc)
+    binder = MagicMock()
+    binder.enabled = False
+    p = QerlinFocusPanel(client=client, binder=binder)
+    qtbot.addWidget(p)
+
+    scale, h, w = 4, 64, 96  # preview geometry; full-res frame is 256 x 384
+    cx_full, cy_full = 200.0, 120.0
+    a = np.radians(angle_deg)
+    rows = np.arange(h, dtype=float)[:, None] + 0.5  # preview pixel centres
+    cols = np.arange(w, dtype=float)[None, :] + 0.5
+    # perpendicular distance from the line through the centroid, direction (cos a, sin a)
+    d = -(cols - cx_full / scale) * np.sin(a) + (rows - cy_full / scale) * np.cos(a)
+    img = np.where(np.abs(d) < 1.0, 255, 0).astype(np.uint8)
+    preview = {"b64": base64.b64encode(img.tobytes()).decode("ascii"),
+               "shape": [h, w], "scale": scale}
+    fake_ipc.emit(c.SUBJ_FRAME, _frame(0.0, 4.0, preview=preview,
+                                       centroid=[cx_full, cy_full], angle=angle_deg))
+
+    item = p._image
+    item.render()
+    qimg = item.qimage
+    assert (qimg.width(), qimg.height()) == (w, h)  # displayed as w cols x h rows
+    (x0, x1), (y0, y1) = p._line_curve.getData()
+    hits = total = 0
+    for f in np.linspace(0.0, 1.0, 201):
+        x, y = x0 + f * (x1 - x0), y0 + f * (y1 - y0)
+        if 0 <= x < w and 0 <= y < h:
+            total += 1
+            hits += qimg.pixelColor(int(x), int(y)).value() > 128
+    assert total > 20
+    assert hits / total > 0.9, f"line misses streak ({hits}/{total})"
 
 
 def test_preview_bad_payload_is_ignored(panel):
