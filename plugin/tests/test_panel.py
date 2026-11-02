@@ -240,3 +240,30 @@ def test_plugin_panel_class():
     plugin = QerlinFocusPanelPlugin()
     assert plugin.name == "qerlin_focus"
     assert plugin.get_panel_class() is QerlinFocusPanel
+
+
+def test_toggle_follows_binder_changes_without_retriggering(qtbot, fake_ipc):
+    from lightfall_endstation_602.binder import RixsRunBinder
+    re = MagicMock()
+    binder = RixsRunBinder(RixsServiceClient(ipc=fake_ipc), run_engine_getter=lambda: re)
+    p = QerlinFocusPanel(client=RixsServiceClient(ipc=fake_ipc), binder=binder)
+    qtbot.addWidget(p)
+    assert binder.enabled and p._enable_toggle.isChecked()
+    binder.disable()  # e.g. disabled elsewhere: the toggle must follow
+    qtbot.waitUntil(lambda: not p._enable_toggle.isChecked(), timeout=2000)
+    assert re.subscribe.call_count == 1  # toggling the button did not re-enable
+    binder.enable()  # the agent tools re-enable the binder
+    qtbot.waitUntil(lambda: p._enable_toggle.isChecked(), timeout=2000)
+    assert binder.enabled and re.subscribe.call_count == 2 and re.unsubscribe.call_count == 1
+
+
+def test_toggle_update_from_worker_thread(qtbot, fake_ipc):
+    import threading
+    from lightfall_endstation_602.binder import RixsRunBinder
+    binder = RixsRunBinder(RixsServiceClient(ipc=fake_ipc), run_engine_getter=MagicMock)
+    p = QerlinFocusPanel(client=RixsServiceClient(ipc=fake_ipc), binder=binder)
+    qtbot.addWidget(p)
+    t = threading.Thread(target=binder.disable)
+    t.start()
+    t.join()
+    qtbot.waitUntil(lambda: not p._enable_toggle.isChecked(), timeout=2000)

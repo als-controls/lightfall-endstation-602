@@ -13,6 +13,7 @@ from qtpy.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from lightfall.plugins.panel_plugin import PanelPlugin
 from lightfall.ui.panels.base import BasePanel, PanelMetadata
+from lightfall.utils.threads import invoke_in_main_thread
 from lightfall.visualization import pg
 
 
@@ -81,6 +82,8 @@ class QerlinFocusPanel(BasePanel):
         self._enable_toggle.blockSignals(True)
         self._enable_toggle.setChecked(True)
         self._enable_toggle.blockSignals(False)
+        self._binder_listener = self._on_binder_changed
+        self._binder.add_listener(self._binder_listener)
         self._retry_enable()
 
     # -- UI -----------------------------------------------------------------
@@ -145,6 +148,23 @@ class QerlinFocusPanel(BasePanel):
             return
         self._retry_timer.stop()
         self._status_label.setText("bound: waiting for a qerlin_focus_scan run")
+
+    def _on_binder_changed(self, enabled: bool) -> None:
+        """Binder listener; may run off the GUI thread, so hop to it."""
+        invoke_in_main_thread(lambda: self._sync_toggle(bool(enabled)))
+
+    def _sync_toggle(self, enabled: bool) -> None:
+        try:
+            toggle = self._enable_toggle
+            if toggle.isChecked() == enabled:
+                return
+            toggle.blockSignals(True)
+            try:
+                toggle.setChecked(enabled)
+            finally:
+                toggle.blockSignals(False)
+        except RuntimeError:  # panel already destroyed
+            return
 
     def _on_enable_toggled(self, checked: bool) -> None:
         self._retry_timer.stop()
@@ -260,6 +280,7 @@ class QerlinFocusPanel(BasePanel):
         # The panel is only a view of the shared binder: closing it must not unbind
         # the agent's scans. Only the title-bar toggle disables the binder.
         self._retry_timer.stop()
+        self._binder.remove_listener(self._binder_listener)
         super()._on_closing()
 
 

@@ -82,3 +82,22 @@ def test_default_credentials_never_read_session_key(monkeypatch):
     url, key, _ = bm._default_credentials()
     assert key is None
     boom.assert_not_called()
+
+
+def test_listeners_notified_on_enable_disable(fake_ipc):
+    b, re = _binder(fake_ipc)
+    seen = []
+    b.add_listener(seen.append)
+    b.enable()
+    b.enable()  # no-op: no second notification
+    b.disable()
+    b.disable()
+    assert seen == [True, False]
+    b.remove_listener(seen.append)
+
+
+def test_listener_exception_does_not_break_enable(fake_ipc):
+    b, re = _binder(fake_ipc)
+    b.add_listener(lambda enabled: 1 / 0)
+    b.enable()
+    assert b.enabled

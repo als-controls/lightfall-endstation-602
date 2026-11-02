@@ -54,6 +54,25 @@ class RixsRunBinder:
         self._token = None
         self._re = None
         self._bound_uid: str | None = None
+        self._listeners: list[Callable[[bool], None]] = []
+
+    def add_listener(self, fn: Callable[[bool], None]) -> None:
+        """Call ``fn(enabled)`` on every enable/disable. Qt-free; may fire off the GUI thread."""
+        if fn not in self._listeners:
+            self._listeners.append(fn)
+
+    def remove_listener(self, fn: Callable[[bool], None]) -> None:
+        try:
+            self._listeners.remove(fn)
+        except ValueError:
+            pass
+
+    def _notify(self) -> None:
+        for fn in list(self._listeners):
+            try:
+                fn(self.enabled)
+            except Exception as ex:
+                logger.exception(ex)
 
     @property
     def enabled(self) -> bool:
@@ -64,6 +83,7 @@ class RixsRunBinder:
             return
         self._re = self._get_re()
         self._token = self._re.subscribe(self._on_document)
+        self._notify()
 
     def disable(self) -> None:
         if not self.enabled:
@@ -73,6 +93,7 @@ class RixsRunBinder:
         finally:
             self._token = None
             self._re = None
+        self._notify()
 
     def _on_document(self, name: str, doc: dict) -> None:
         try:
