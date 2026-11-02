@@ -129,3 +129,45 @@ def test_reader_missing_stream_raises_keyerror(tiled_client):
     run = tiled_client.create_container(str(uuid.uuid4()))
     with pytest.raises(KeyError):
         FocusRunReader(run, _info()).read_new(0)
+
+
+def _write_scrambled(client, frames, seq, positions):
+    run = client.create_container(str(uuid.uuid4()))
+    primary = run.create_container("primary")
+    primary.write_array(np.asarray(frames, dtype=float), key="marana_image")
+    primary.write_array(np.asarray(positions, dtype=float), key="sm3_pitch")
+    primary.write_array(np.asarray(seq), key="seq_num")
+    return run
+
+
+def test_reader_pairs_by_seq_num_when_table_is_scrambled(tiled_client):
+    n = 6
+    frames = np.stack([np.full((4, 5), float(i + 1)) for i in range(n)])  # frame i = seq i+1
+    order = [2, 4, 6, 1, 3, 5]  # storage order: evens then odds
+    pitch = {s: s * 0.1 for s in range(1, n + 1)}
+    run = _write_scrambled(tiled_client, frames, order, [pitch[s] for s in order])
+    reader = FocusRunReader(run, _info(shape=(4, 5)))
+    got = reader.read_new(0)
+    assert [s for s, _, _ in got] == [1, 2, 3, 4, 5, 6]
+    for s, p, f in got:
+        assert p == pytest.approx(pitch[s])
+        assert np.all(f == s)
+    tail = reader.read_new(4)
+    assert [(s, round(p, 3)) for s, p, _ in tail] == [(5, 0.5), (6, 0.6)]
+    assert np.all(tail[0][2] == 5)
+
+
+def test_reader_withholds_frame_until_seq_in_table(tiled_client):
+    frames = np.stack([np.full((4, 5), float(i + 1)) for i in range(4)])
+    # frame 3 (seq 3) is in the array but its table row has not landed yet
+    run = _write_scrambled(tiled_client, frames, [2, 1, 4], [0.2, 0.1, 0.4])
+    got = FocusRunReader(run, _info(shape=(4, 5))).read_new(0)
+    assert [(s, round(p, 1)) for s, p, _ in got] == [(1, 0.1), (2, 0.2)]  # stops at gap
+    assert FocusRunReader(run, _info(shape=(4, 5))).read_new(2) == []
+
+
+def test_reader_without_seq_num_column_is_positional(tiled_client):
+    frames = np.stack([np.full((4, 5), float(i + 1)) for i in range(3)])
+    run = _write_manual(tiled_client, frames, [0.3, 0.2, 0.1])
+    got = FocusRunReader(run, _info(shape=(4, 5))).read_new(0)
+    assert [(s, round(p, 1)) for s, p, _ in got] == [(1, 0.3), (2, 0.2), (3, 0.1)]

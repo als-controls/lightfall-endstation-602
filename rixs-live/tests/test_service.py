@@ -54,13 +54,17 @@ class Msg:
 class FakeStream:
     """A primary stream whose rows become visible as the test reveals them."""
 
-    def __init__(self, frames, positions):
+    def __init__(self, frames, positions, table_order=None):
         self._cols = {
             "marana_image": np.asarray(frames, dtype=float),
             "sm3_pitch": np.asarray(positions, dtype=float),
             "sm3_pitch_setpoint": np.asarray(positions, dtype=float) + 99.0,  # decoy
             "seq_num": np.arange(1, len(positions) + 1),
         }
+        if table_order is not None:  # table columns in scrambled storage order
+            idx = np.asarray(table_order) - 1
+            for k in ("sm3_pitch", "sm3_pitch_setpoint", "seq_num"):
+                self._cols[k] = self._cols[k][idx]
         self.visible = 0
 
     def __iter__(self):
@@ -100,11 +104,11 @@ def _rixs_md(shape, **over):
     return md
 
 
-def _add_run(tiled, uid, frames, positions, **md_over):
+def _add_run(tiled, uid, frames, positions, table_order=None, **md_over):
     shape = np.asarray(frames).shape[1:]
     start = {"uid": uid, "plan_name": "scan", "num_points": len(positions),
              "rixs": _rixs_md(shape, **md_over)}
-    stream = FakeStream(frames, positions)
+    stream = FakeStream(frames, positions, table_order)
     tiled.runs[uid] = FakeRun(start, stream)
     return stream
 
@@ -696,3 +700,25 @@ async def test_old_style_stop_payload_still_waits_for_num_points(stub_score):
     await svc._handle_stop({"run_uid": "runA"}, None)  # no exit_status / num_events
     await task
     assert len(fake.on(SUBJ_COMPLETE)[0]["points"]) == 5
+
+
+async def test_scrambled_table_rows_give_correct_optimal_position(stub_score):
+    """PostgreSQL-style storage order: columns scrambled, array in acquisition order."""
+    positions = [-1.0, -0.8, -0.6, -0.4, -0.2, 0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+    n = len(positions)
+    order = list(range(2, n + 1, 2)) + list(range(1, n + 1, 2))  # evens then odds
+    fake, tiled = FakeNats(), FakeTiled()
+    stream = _add_run(tiled, "runS", _parabola_frames(positions, best=0.2), positions,
+                      table_order=order)
+    svc = _service(fake, tiled)
+    stream.visible = n
+    await svc._handle_bind(_bind("runS"), None)
+    await _until(lambda: len(fake.on(SUBJ_FRAME)) == n)
+    await svc._handle_stop({"run_uid": "runS"}, None)
+    await svc.wait_idle()
+    msgs = fake.on(SUBJ_FRAME)
+    assert [m["seq_num"] for m in msgs] == list(range(1, n + 1))
+    assert np.allclose([m["position"] for m in msgs], positions)
+    (done,) = fake.on(SUBJ_COMPLETE)
+    assert done["fit"]["ok"], done["fit"]
+    assert abs(done["fit"]["optimal_position"] - 0.2) < 0.05
