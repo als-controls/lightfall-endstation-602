@@ -14,6 +14,8 @@ class NatsConfig(BaseModel):
     app_version: str = ""
     auth_timeout: float = 70.0  # > 60s Lightfall trust-dialog timeout
     connect_timeout: float = 5.0
+    max_reconnect_attempts: int = -1  # -1 = forever (nats-py default gives up after ~2 min)
+    reconnect_time_wait: float = 2.0
 
 
 class TiledConfig(BaseModel):

@@ -47,20 +47,36 @@ class RixsLiveService:
         return self._current is not None
 
     def main(self) -> None:
-        asyncio.run(self._main())
+        code = asyncio.run(self._main())
+        if code:
+            raise SystemExit(code)
 
-    async def _main(self) -> None:
+    async def _main(self) -> int:
+        """Run until cancelled (0) or until the NATS connection is closed for good (1).
+
+        A closed connection never comes back, so exit non-zero and let a supervisor
+        restart the service instead of sitting alive but deaf.
+        """
         await self._nats.connect()
+        self._nats.on_reconnected = self._on_reconnected
         await self._register_subscriptions()
         asyncio.get_running_loop().create_task(self._authenticate_bg())
         logger.info("rixs-live ready")
         try:
-            while True:
+            while not self._nats.is_closed:
                 await asyncio.sleep(0.5)
+            logger.error("NATS connection closed for good; exiting so a supervisor "
+                         "can restart rixs-live")
+            return 1
         except (KeyboardInterrupt, asyncio.CancelledError):
-            pass
+            return 0
         finally:
             await self._nats.close()
+
+    async def _on_reconnected(self) -> None:
+        # Subscriptions are replayed by nats-py itself; the Tiled credentials came from
+        # a handshake on the old connection, so refresh them (kept until replaced).
+        asyncio.get_running_loop().create_task(self._authenticate_bg())
 
     async def _authenticate_bg(self) -> None:
         try:

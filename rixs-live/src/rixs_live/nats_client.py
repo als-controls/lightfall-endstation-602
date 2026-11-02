@@ -7,8 +7,10 @@ itself then goes to {priv_root}.auth.request.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import ssl
+from typing import Awaitable, Callable
 
 import nats
 from loguru import logger
@@ -27,6 +29,10 @@ class NatsClient:
         self._nc = None
         self._cap = new_capability()
         self.tiled_credentials: dict | None = None
+        # Set by closed_cb: the connection gave up for good (or was closed).
+        self.closed = asyncio.Event()
+        # Awaited after every successful reconnect (e.g. to re-run the auth handshake).
+        self.on_reconnected: Callable[[], Awaitable[None]] | None = None
 
     def _build_tls_context(self) -> ssl.SSLContext | None:
         cfg = self._config
@@ -40,8 +46,40 @@ class NatsClient:
             ctx.verify_mode = ssl.CERT_NONE
         return ctx
 
+    async def _disconnected_cb(self) -> None:
+        logger.warning(f"NATS disconnected from {self._config.url}; reconnecting")
+
+    async def _reconnected_cb(self) -> None:
+        url = getattr(self._nc, "connected_url", None)
+        logger.info(f"NATS reconnected to {url.netloc if url else self._config.url}")
+        if self.on_reconnected is not None:
+            try:
+                await self.on_reconnected()
+            except Exception as ex:
+                logger.warning(f"post-reconnect hook failed: {ex}")
+
+    async def _closed_cb(self) -> None:
+        logger.error(f"NATS connection to {self._config.url} closed")
+        self.closed.set()
+
+    async def _error_cb(self, ex: Exception) -> None:
+        logger.warning(f"NATS error: {ex!r}")
+
+    @property
+    def is_closed(self) -> bool:
+        return self.closed.is_set() or (self._nc is not None and self._nc.is_closed)
+
     async def connect(self) -> None:
-        kwargs = dict(connect_timeout=self._config.connect_timeout,
+        cfg = self._config
+        # nats-py defaults to 60 attempts x 2 s, then closes for good; a long-running
+        # service must survive any broker restart, so reconnect forever.
+        kwargs = dict(connect_timeout=cfg.connect_timeout,
+                      max_reconnect_attempts=cfg.max_reconnect_attempts,
+                      reconnect_time_wait=cfg.reconnect_time_wait,
+                      disconnected_cb=self._disconnected_cb,
+                      reconnected_cb=self._reconnected_cb,
+                      closed_cb=self._closed_cb,
+                      error_cb=self._error_cb,
                       **self._cap.connect_kwargs())
         tls = self._build_tls_context()
         if tls is not None:
@@ -51,8 +89,9 @@ class NatsClient:
 
     async def close(self) -> None:
         if self._nc is not None:
-            await self._nc.drain()
-            self._nc = None
+            nc, self._nc = self._nc, None
+            if not nc.is_closed:
+                await nc.drain()
 
     async def authenticate(self) -> dict | None:
         cfg = self._config
