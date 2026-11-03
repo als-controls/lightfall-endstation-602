@@ -253,6 +253,7 @@ class RixsLiveService:
                 None, score_frame, frame, disp, info.mono_energy_ev)
             preview = await loop.run_in_executor(None, make_preview, frame)
             payload = {"run_uid": cur["run_uid"], "seq_num": seq_num,
+                       "motor_field": info.motor_field, "motor_units": info.motor_units,
                        "position": position, **score.to_dict(), "preview": preview}
             cur["frames"].append(payload)
             cur["next"] += 1
@@ -359,6 +360,7 @@ class RixsLiveService:
         return {
             "run_uid": cur["run_uid"],
             "motor_field": cur["info"].motor_field,
+            "motor_units": cur["info"].motor_units,
             "points": points,
             "fit": fit,
             "best_measured": ({"position": best["position"], "fwhm_px": best["fwhm_px"]}

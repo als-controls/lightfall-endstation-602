@@ -20,7 +20,7 @@ from rixs_live.contract import (
 from rixs_live.focus import FrameScore
 from rixs_live.service import RixsLiveService
 
-FRAME_KEYS = {"run_uid", "seq_num", "position", "fwhm_px", "fwhm_mev", "resolving_power",
+FRAME_KEYS = {"run_uid", "seq_num", "motor_field", "motor_units", "position", "fwhm_px", "fwhm_mev", "resolving_power",
               "score_valid", "failure_reason", "centroid", "angle_deg", "preview"}
 
 
@@ -55,16 +55,16 @@ class Msg:
 class FakeStream:
     """A primary stream whose rows become visible as the test reveals them."""
 
-    def __init__(self, frames, positions, table_order=None):
+    def __init__(self, frames, positions, table_order=None, motor="sm3_pitch"):
         self._cols = {
             "marana_image": np.asarray(frames, dtype=float),
-            "sm3_pitch": np.asarray(positions, dtype=float),
-            "sm3_pitch_setpoint": np.asarray(positions, dtype=float) + 99.0,  # decoy
+            motor: np.asarray(positions, dtype=float),
+            f"{motor}_setpoint": np.asarray(positions, dtype=float) + 99.0,  # decoy
             "seq_num": np.arange(1, len(positions) + 1),
         }
         if table_order is not None:  # table columns in scrambled storage order
             idx = np.asarray(table_order) - 1
-            for k in ("sm3_pitch", "sm3_pitch_setpoint", "seq_num"):
+            for k in (motor, f"{motor}_setpoint", "seq_num"):
                 self._cols[k] = self._cols[k][idx]
         self.visible = 0
 
@@ -109,7 +109,8 @@ def _add_run(tiled, uid, frames, positions, table_order=None, **md_over):
     shape = np.asarray(frames).shape[1:]
     start = {"uid": uid, "plan_name": "scan", "num_points": len(positions),
              "rixs": _rixs_md(shape, **md_over)}
-    stream = FakeStream(frames, positions, table_order)
+    stream = FakeStream(frames, positions, table_order,
+                        motor=start["rixs"]["motor_field"])
     tiled.runs[uid] = FakeRun(start, stream)
     return stream
 
@@ -182,6 +183,8 @@ async def test_bind_score_complete():
 
     (done,) = fake.on(SUBJ_COMPLETE)
     assert done["run_uid"] == "runA" and done["motor_field"] == "sm3_pitch"
+    assert done["motor_units"] == "" and msgs[0]["motor_units"] == ""
+    assert msgs[0]["motor_field"] == "sm3_pitch"
     assert done["fit"]["ok"], done["fit"]
     assert abs(done["fit"]["optimal_position"] - best) < 1.5  # lopsided curve: vertex bias
     assert len(done["points"]) == 7
@@ -206,6 +209,24 @@ async def test_stop_drains_frames_not_yet_polled(stub_score):
     assert [m["seq_num"] for m in fake.on(SUBJ_FRAME)] == [1, 2, 3, 4, 5]
     (done,) = fake.on(SUBJ_COMPLETE)
     assert done["fit"]["ok"] and abs(done["fit"]["optimal_position"] - 0.2) < 1e-6
+
+
+async def test_any_motor_field_and_units_pass_through(stub_score):
+    """Nothing is SM3-specific: a Sample X (mm) scan reads its own column and units."""
+    positions = [-0.88, -0.84, -0.80, -0.76, -0.72]
+    fake, tiled = FakeNats(), FakeTiled()
+    stream = _add_run(tiled, "runX", _parabola_frames(positions, best=-0.8), positions,
+                      motor_field="sample_x", motor_units="mm")
+    stream.visible = 5
+    svc = _service(fake, tiled)
+    await svc._handle_bind(_bind("runX"), None)
+    await svc._handle_stop({"run_uid": "runX"}, None)
+    frames = fake.on(SUBJ_FRAME)
+    assert [f["position"] for f in frames] == pytest.approx(positions)
+    assert {(f["motor_field"], f["motor_units"]) for f in frames} == {("sample_x", "mm")}
+    (done,) = fake.on(SUBJ_COMPLETE)
+    assert (done["motor_field"], done["motor_units"]) == ("sample_x", "mm")
+    assert done["fit"]["ok"] and done["fit"]["optimal_position"] == pytest.approx(-0.8)
 
 
 async def test_complete_with_invalid_points(monkeypatch):

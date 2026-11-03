@@ -24,6 +24,8 @@ SUBJ_DISCOVER = "_rixs.discover"
 # coordinates, i.e. the direction vector is (cos, sin) in (column, row); a
 # near-vertical line reads ~ +/-90. ``preview`` is row-major uint8, shape [h, w],
 # block-downsampled by ``scale`` (full-res coord / scale = preview coord).
+# The start doc's optional ``motor_units`` (added within v2; older senders omit it,
+# read as "") is echoed as ``motor_units`` in frame and complete payloads.
 
 
 @dataclass(frozen=True)
@@ -33,6 +35,7 @@ class RixsRunInfo:
     motor_field: str
     frame_shape: tuple[int, int]
     mono_energy_ev: float | None
+    motor_units: str = ""  # SM3 pitch in its native units, Sample X in mm; "" if unknown
 
 
 def parse_start_rixs(run_uid: str, start_doc: dict) -> RixsRunInfo | None:
@@ -56,4 +59,6 @@ def parse_start_rixs(run_uid: str, start_doc: dict) -> RixsRunInfo | None:
         image_field, motor_field = md["image_field"], md["motor_field"]
     except (TypeError, ValueError, KeyError) as exc:
         raise ValueError(f"malformed rixs metadata: {exc!r}") from exc
-    return RixsRunInfo(run_uid, image_field, motor_field, (h, w), md.get("mono_energy_ev"))
+    units = md.get("motor_units")
+    return RixsRunInfo(run_uid, image_field, motor_field, (h, w), md.get("mono_energy_ev"),
+                       units if isinstance(units, str) else "")

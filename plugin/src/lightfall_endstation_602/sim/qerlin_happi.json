@@ -6,6 +6,7 @@
         "creation": "Fri Oct 30 00:00:00 2026",
         "device_class": "lightfall_endstation_602.sim.devices.SimSM3Pitch",
         "documentation": null,
+        "functional_group": "motor",
         "kwargs": {
             "name": "{{name}}"
         },
@@ -21,6 +22,7 @@
         "creation": "Fri Oct 30 00:00:00 2026",
         "device_class": "lightfall_endstation_602.sim.devices.SimSampleX",
         "documentation": null,
+        "functional_group": "motor",
         "kwargs": {
             "name": "{{name}}"
         },
@@ -36,6 +38,7 @@
         "creation": "Fri Oct 30 00:00:00 2026",
         "device_class": "lightfall_endstation_602.sim.devices.SimMonoEnergy",
         "documentation": null,
+        "functional_group": "motor",
         "kwargs": {
             "name": "{{name}}"
         },

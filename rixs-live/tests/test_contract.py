@@ -24,6 +24,20 @@ def test_parse_ok():
     )
 
 
+def test_parse_motor_units_optional():
+    assert parse_start_rixs("u1", _doc()).motor_units == ""  # older senders omit it
+    info = parse_start_rixs("u1", _doc(motor_field="sample_x", motor_units="mm"))
+    assert (info.motor_field, info.motor_units) == ("sample_x", "mm")
+    assert parse_start_rixs("u1", _doc(motor_units=None)).motor_units == ""
+
+
+def test_plugin_md_round_trips():
+    md = plugin_contract.build_rixs_md("marana_image", "sample_x", (2048, 2048), 850.0,
+                                       motor_units="mm")
+    assert parse_start_rixs("u1", {"rixs": md}) == RixsRunInfo(
+        "u1", "marana_image", "sample_x", (2048, 2048), 850.0, "mm")
+
+
 def test_parse_absent_returns_none():
     assert parse_start_rixs("u1", {"plan_name": "scan"}) is None
 

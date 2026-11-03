@@ -20,6 +20,8 @@ SUBJ_DISCOVER = "_rixs.discover"
 # coordinates, i.e. the direction vector is (cos, sin) in (column, row); a
 # near-vertical line reads ~ +/-90. ``preview`` is row-major uint8, shape [h, w],
 # block-downsampled by ``scale`` (full-res coord / scale = preview coord).
+# The start doc's optional ``motor_units`` (added within v2; older senders omit it,
+# read as "") is echoed as ``motor_units`` in frame and complete payloads.
 
 
 def build_rixs_md(
@@ -27,8 +29,13 @@ def build_rixs_md(
     motor_field: str,
     frame_shape: tuple[int, int],
     mono_energy_ev: float | None,
+    motor_units: str = "",
 ) -> dict:
-    """Build the ``rixs`` start-document metadata block."""
+    """Build the ``rixs`` start-document metadata block.
+
+    ``motor_units`` (optional, "" if unknown) labels ``motor_field``: SM3 pitch in its
+    native units, Sample X in mm.
+    """
     return {
         "contract_version": CONTRACT_VERSION,
         "kind": KIND_ZEROTH,
@@ -36,4 +43,5 @@ def build_rixs_md(
         "motor_field": motor_field,
         "frame_shape": [int(frame_shape[0]), int(frame_shape[1])],
         "mono_energy_ev": mono_energy_ev,
+        "motor_units": motor_units or "",
     }
