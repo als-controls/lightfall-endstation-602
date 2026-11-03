@@ -223,10 +223,30 @@ def test_status_does_not_overwrite_frame_or_fit_text(panel):
     assert panel._state_label.text() == "service: idle"
 
 
-def test_pitch_axis_has_no_si_prefix(panel):
+def test_axis_label_follows_payload_motor_and_units(panel):
     axis = panel._plot.getPlotItem().getAxis("bottom")
-    assert "mrad" in axis.labelText
-    assert "mmrad" not in axis.labelString()
+    assert axis.labelText == "position"  # nothing scanned yet
+    f = _frame(-0.82, 5.0)
+    f.update(motor_field="sample_x", motor_units="mm")
+    panel.test_ipc.emit(c.SUBJ_FRAME, f)
+    assert axis.labelText == "sample_x (mm)"
+    assert "mmm" not in axis.labelString()  # no SI auto-prefix
+    assert "sample_x -0.82" in panel._status_label.text()
+    panel.test_ipc.emit(c.SUBJ_COMPLETE, {
+        "run_uid": "u2", "motor_field": "sm3_pitch", "motor_units": "", "points": [],
+        "fit": {"ok": True, "optimal_position": 104.0, "coeffs": [1.0, -208.0, 10821.0],
+                "reason": None},
+        "best_measured": None})
+    assert axis.labelText == "sm3_pitch"
+    assert "optimal sm3_pitch 104" in panel._status_label.text()
+
+
+def test_axis_label_kept_for_payload_without_motor(panel):
+    f = _frame(0.0, 4.0)
+    f.update(motor_field="sample_x", motor_units="mm")
+    panel.test_ipc.emit(c.SUBJ_FRAME, f)
+    panel.test_ipc.emit(c.SUBJ_FRAME, _frame(1.0, 5.0))  # older service: no motor keys
+    assert panel._plot.getPlotItem().getAxis("bottom").labelText == "sample_x (mm)"
 
 
 def test_close_keeps_binder_enabled(panel):

@@ -45,7 +45,7 @@ class QerlinFocusPanel(BasePanel):
     panel_metadata: ClassVar[PanelMetadata] = PanelMetadata(
         id="lightfall_endstation_602.panels.qerlin_focus",
         name="QERLIN Focus",
-        description="Live SM3 focus curve and zeroth-order preview from the rixs-live service",
+        description="Live focus curve (any motor) and zeroth-order preview from the rixs-live service",
         icon="mdi6.image-filter-center-focus",
         category="Analysis",
         singleton=True,
@@ -71,6 +71,7 @@ class QerlinFocusPanel(BasePanel):
         self._down_text: str | None = None  # status text we set for a down service
         self._xs: list[float] = []
         self._ys: list[float] = []
+        self._motor_field = "position"  # until a payload names the scanned motor
         super().__init__(parent)
         self._client.frameScored.connect(self._on_frame)
         self._client.scanComplete.connect(self._on_complete)
@@ -106,8 +107,8 @@ class QerlinFocusPanel(BasePanel):
         row = QHBoxLayout()
 
         self._plot = pg.PlotWidget()
-        # Unit in the label text: units="mrad" would get pyqtgraph's SI prefix ("mmrad").
-        self._plot.setLabel("bottom", "SM3 pitch (mrad)")
+        self._axis_text = ""
+        self._set_axis_label("position", "")
         self._plot.setLabel("left", "FWHM", units="px")
         self._scatter = pg.ScatterPlotItem(size=8)
         self._fit_curve = pg.PlotDataItem([], [], pen=pg.series_pen(1))
@@ -221,6 +222,22 @@ class QerlinFocusPanel(BasePanel):
         self._client.check_health_async()
 
     # -- events ---------------------------------------------------------------
+    def _set_axis_label(self, field: str, units: str) -> None:
+        # Units go in the label text: setLabel(units=...) would SI-prefix them ("mmm").
+        text = f"{field} ({units})" if units else field
+        if text != self._axis_text:
+            self._axis_text = text
+            self._plot.setLabel("bottom", text)
+
+    def _track_motor(self, data: dict) -> None:
+        """Label the x axis from the payload's motor_field / motor_units, when present."""
+        field = data.get("motor_field")
+        if not isinstance(field, str) or not field:
+            return
+        units = data.get("motor_units")
+        self._motor_field = field
+        self._set_axis_label(field, units if isinstance(units, str) else "")
+
     def _start_run(self, run_uid) -> None:
         if run_uid == self._run_uid:
             return
@@ -232,13 +249,14 @@ class QerlinFocusPanel(BasePanel):
 
     def _on_frame(self, data: dict) -> None:
         self._start_run(data.get("run_uid"))
+        self._track_motor(data)
         pos = _num(data.get("position"))
         fwhm = _num(data.get("fwhm_px"))
         if data.get("score_valid") and pos is not None and fwhm is not None:
             self._xs.append(pos)
             self._ys.append(fwhm)
             self._scatter.setData(self._xs, self._ys)
-            text = f"pitch {pos:.4g}: FWHM {fwhm:.3g} px"
+            text = f"{self._motor_field} {pos:.4g}: FWHM {fwhm:.3g} px"
             mev = _num(data.get("fwhm_mev"))
             if mev is not None:
                 text += f" ({mev:.3g} meV)"
@@ -274,6 +292,7 @@ class QerlinFocusPanel(BasePanel):
 
     def _on_complete(self, data: dict) -> None:
         self._start_run(data.get("run_uid"))
+        self._track_motor(data)
         if data.get("run_uid") == self._pending_uid:
             self._pending_uid = None
         points = [p for p in data.get("points") or []
@@ -299,7 +318,8 @@ class QerlinFocusPanel(BasePanel):
         if fit.get("ok") and opt is not None:
             self._opt_line.setValue(opt)
             self._opt_line.setVisible(True)
-            self._status_label.setText(f"scan complete: optimal pitch {opt:.4g}")
+            self._status_label.setText(
+                f"scan complete: optimal {self._motor_field} {opt:.4g}")
         else:
             self._opt_line.setVisible(False)
             self._status_label.setText(

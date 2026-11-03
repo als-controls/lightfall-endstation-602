@@ -58,7 +58,7 @@ Two scripts live outside git under
      tool:qerlin_focusing -> PluginStatus.READY
    AgentSpecRegistry 'qerlin': True qerlin
    plan plugin name: qerlin_focus_scan fn: _qerlin_focus_scan_ui
-   qerlin_sim devices: ['marana', 'mono_energy', 'sm3_pitch']
+   qerlin_sim devices: ['marana', 'mono_energy', 'sm3_pitch']   # sample_x added since
    panel: lightfall_endstation_602.panels.qerlin_focus / QERLIN Focus
    panel default construction: toggle checked = True binder enabled = False
      status = waiting for RunEngine (...)   # no engine thread headless; the panel retries every second
@@ -105,8 +105,20 @@ Two scripts live outside git under
    can restart it.
    An empty `app_version` in `rixs_service_status` is expected for an editable install.
 3. **Backend.** Start Lightfall and enable the `qerlin_sim` device backend
-   (Settings -> Devices; the preference is `device_plugin_qerlin_sim_enabled`). Check that `sm3_pitch`, `mono_energy` and `marana`
-   appear.
+   (Settings -> Devices; the preference is `device_plugin_qerlin_sim_enabled`). Check that
+   these appear:
+
+   | Device | Units | Limits | Start | Hidden optimum (`LIGHTFALL_SIM_SEED`) |
+   |---|---|---|---|---|
+   | `sm3_pitch` | native (as logged) | 90..125 | 105 | 100..114 (unset: 104.0) |
+   | `sample_x` | mm | -1.5..0.5 | -0.85 | -0.85..-0.70 (unset: -0.80) |
+   | `mono_energy` | eV | 0..5000 | 850 | |
+   | `marana` | 2048x2048 uint16 frames | | | |
+
+   The sim line width depends on both motors and is calibrated to QERLIN's real scans
+   (about 5 px FWHM at best; pitch +12 -> ~18.5 px, -6 -> ~8.5 px; Sample X +-0.1 mm ->
+   ~15 px). The best Sample X shifts by 0.005 mm per pitch unit away from the best pitch
+   (a guess, not measured), so Sample X needs re-checking after a pitch change.
 4. **Panel.** Open the "QERLIN Focus" panel (Analysis). Its title-bar toggle
    is on by default; the status line should read "bound: waiting for a
    qerlin_focus_scan run" once the RunEngine is up. The right-hand health
@@ -114,14 +126,18 @@ Two scripts live outside git under
    responding" means discovery got no answer, and a scan started meanwhile reads
    "run <uid> not analysed: rixs-live not responding". `rixs_service_status`
    reports the same state.
-5. **Plan from the UI.** Run `qerlin_focus_scan` once (devices marana, sm3,
-   mono; defaults -1..1 mrad, 21 points). The left plot fills with FWHM vs
-   pitch, the right shows the zeroth-order preview with its fitted line, and
-   on `rixs.zeroth.complete` the fitted parabola and a vertical line at the
-   optimal pitch appear.
+5. **Plan from the UI.** Run `qerlin_focus_scan` once (devices marana, motor
+   = `sm3_pitch`, mono; defaults 98..116, 19 points). The left plot fills with
+   FWHM vs position, its x axis labelled with the motor name and units from the
+   service (`sm3_pitch`, or `sample_x (mm)`), the right shows the zeroth-order
+   preview with its fitted line, and on `rixs.zeroth.complete` the fitted
+   parabola and a vertical line at the optimum appear. Then scan `sample_x`,
+   e.g. -0.92..-0.80 mm in 13 points.
 6. **Agent.** Open the "qerlin" agent in the assistant panel and ask it to
-   focus the spectrometer. It checks `rixs_service_status`, runs focus scans,
-   reads `get_focus_result`, and moves SM3 to the optimum.
+   focus the spectrometer. It checks `rixs_service_status`, then, like QERLIN,
+   focuses SM3 pitch first and Sample X second (coarse then fine each), reading
+   `get_focus_result` after every scan, moving each motor to its optimum and
+   re-checking Sample X after any pitch change.
 
 An aborted or failed scan completes as soon as its rows stop arriving
 (`drain_settle_s`): the stop document's `exit_status` and `num_events` are

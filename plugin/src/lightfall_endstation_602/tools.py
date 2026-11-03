@@ -115,7 +115,8 @@ class QerlinFocusingTools(ToolPlugin):
 
     @property
     def description(self) -> str:
-        return "Closed-loop SM3 focusing for the QERLIN (6.0.2) RIXS spectrometer via the rixs-live service"
+        return ("Closed-loop focusing (SM3 pitch, Sample X, any motor) for the QERLIN (6.0.2) "
+                "RIXS spectrometer via the rixs-live service")
 
     @property
     def category(self) -> str:
@@ -170,8 +171,10 @@ class QerlinFocusingTools(ToolPlugin):
                 "(bound) focus scan. The service finishes scoring a few seconds after the "
                 "RunEngine goes idle; this tool waits for that analysis (up to wait_s "
                 "seconds, default 60, max 300) and then returns {run_uid, motor_field, "
-                "points:[{position, fwhm_px, fwhm_mev, resolving_power, score_valid}], "
-                "fit:{ok, optimal_position, coeffs, reason}, best_measured}. Errors if the "
+                "motor_units, points:[{position, fwhm_px, fwhm_mev, resolving_power, "
+                "score_valid}], fit:{ok, optimal_position, coeffs, reason}, best_measured}; "
+                "positions are in the scanned motor's units (motor_units, \"\" = native "
+                "units, e.g. SM3 pitch). Errors if the "
                 "service is down, the run is unknown to it, or the analysis is still "
                 "running after wait_s."
             ),
