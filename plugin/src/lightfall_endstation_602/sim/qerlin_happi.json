@@ -14,6 +14,21 @@
         "prefix": "QERLIN:SIM:sm3_pitch",
         "type": "OphydItem"
     },
+    "sample_x": {
+        "_id": "sample_x",
+        "active": true,
+        "args": [],
+        "creation": "Fri Oct 30 00:00:00 2026",
+        "device_class": "lightfall_endstation_602.sim.devices.SimSampleX",
+        "documentation": null,
+        "kwargs": {
+            "name": "{{name}}"
+        },
+        "last_edit": "Fri Oct 30 00:00:00 2026",
+        "name": "sample_x",
+        "prefix": "QERLIN:SIM:sample_x",
+        "type": "OphydItem"
+    },
     "mono_energy": {
         "_id": "mono_energy",
         "active": true,

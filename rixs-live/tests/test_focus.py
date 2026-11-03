@@ -8,7 +8,7 @@ import pytest
 from lightfall_endstation_602.sim.model import FocusModel, render_frame
 from rixs_live.focus import FrameScore, fit_focus_curve, make_preview, score_frame
 
-BEST = 0.3
+BEST = 104.0  # hidden best SM3 pitch (native units)
 SHAPE = (2048, 2048)  # real Marana geometry; the finder rejects broad lines on small frames
 
 
@@ -26,8 +26,8 @@ def best_frame():
 def scores(best_frame):
     return {
         0.0: score_frame(best_frame, 0.0, None),
-        1.0: score_frame(_frame(BEST + 1.0), 0.0, None),
-        2.0: score_frame(_frame(BEST + 2.0), 0.0, None),
+        1.0: score_frame(_frame(BEST + 6.0), 0.0, None),
+        2.0: score_frame(_frame(BEST + 12.0), 0.0, None),
     }
 
 
@@ -86,13 +86,15 @@ def _model_fwhm(pitch):
 
 
 def test_fit_recovers_best():
-    xs = list(np.linspace(BEST - 1.5, BEST + 1.5, 11))
+    xs = list(np.linspace(BEST - 3.0, BEST + 3.0, 11))
     rng = np.random.default_rng(0)
     ys = [_model_fwhm(x) * (1 + 0.03 * rng.standard_normal()) for x in xs]
     r = fit_focus_curve(xs, ys)
     assert r["ok"] is True
     assert r["reason"] is None
-    assert abs(r["optimal_position"] - BEST) < 0.15
+    # the sim curve is lopsided (steeper above best), so the parabola vertex sits a
+    # little on the shallow side
+    assert abs(r["optimal_position"] - BEST) < 1.0
     assert len(r["coeffs"]) == 3
     json.dumps(r)
 

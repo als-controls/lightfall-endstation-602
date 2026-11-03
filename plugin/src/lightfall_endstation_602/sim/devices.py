@@ -16,12 +16,13 @@ log = logging.getLogger(__name__)
 
 
 class SimState:
-    """Module singleton: the hidden focus model and the registered SM3 motor."""
+    """Module singleton: the hidden focus model and the registered focusing motors."""
 
     def __init__(self):
         seed = os.environ.get("LIGHTFALL_SIM_SEED")
         self.model: FocusModel = FocusModel.from_seed(int(seed) if seed else None)
         self.sm3: "SimSM3Pitch | None" = None
+        self.sample_x: "SimSampleX | None" = None
 
 
 _STATE: SimState | None = None
@@ -37,9 +38,11 @@ def get_sim_state() -> SimState:
 class _LimitedAxis(SynAxis):
     _limits = (-3.0, 3.0)
     _init = 0.0
+    _egu = ""
 
     def __init__(self, name, **kw):
         kw.setdefault("value", self._init)
+        kw.setdefault("egu", self._egu)  # SynAxis would default to "mm"
         super().__init__(name=name, **kw)
 
     @property
@@ -54,14 +57,26 @@ class _LimitedAxis(SynAxis):
 
 
 class SimSM3Pitch(_LimitedAxis):
-    """SM3 mirror pitch in mrad, limits +-3."""
+    """SM3 mirror pitch in its native (logged) units, limits 90..125."""
 
-    _limits = (-3.0, 3.0)
-    _init = 0.0
+    _limits = (90.0, 125.0)
+    _init = 105.0
 
     def __init__(self, name, **kw):
         super().__init__(name, **kw)
         get_sim_state().sm3 = self
+
+
+class SimSampleX(_LimitedAxis):
+    """Sample X in mm, limits -1.5..0.5."""
+
+    _limits = (-1.5, 0.5)
+    _init = -0.85
+    _egu = "mm"
+
+    def __init__(self, name, **kw):
+        super().__init__(name, **kw)
+        get_sim_state().sample_x = self
 
 
 class SimMonoEnergy(_LimitedAxis):
@@ -69,10 +84,11 @@ class SimMonoEnergy(_LimitedAxis):
 
     _limits = (0.0, 5000.0)
     _init = 850.0
+    _egu = "eV"
 
 
 class SimMarana(Device):
-    """Marana-like 2D detector; frame width depends on current SM3 pitch."""
+    """Marana-like 2D detector; frame width depends on current SM3 pitch and Sample X."""
 
     image = Cpt(Signal, value=None, kind="normal")
     exposure_time = Cpt(Signal, value=1.0, kind="config")
@@ -92,14 +108,16 @@ class SimMarana(Device):
     def trigger(self):
         state = get_sim_state()
         if state.sm3 is None:
+            pitch = state.model.best_pitch
             if not self._warned:
-                log.warning("SimMarana: no SimSM3Pitch registered; using pitch 0.0")
+                log.warning(f"SimMarana: no SimSM3Pitch registered; using pitch {pitch:g}")
                 self._warned = True
-            pitch = 0.0
         else:
             pitch = float(state.sm3.position)
+        # No Sample X motor: treat Sample X as at its best for this pitch.
+        sample_x = None if state.sample_x is None else float(state.sample_x.position)
         frame = render_frame(state.model, pitch, float(self.exposure_time.get()),
-                             shape=self.frame_shape)
+                             shape=self.frame_shape, sample_x=sample_x)
         self.image.put(frame)
         st = Status()
         st.set_finished()

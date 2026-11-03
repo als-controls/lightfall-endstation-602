@@ -153,9 +153,9 @@ def _parabola_frames(positions, best=0.2, shape=(8, 8)):
 
 async def test_bind_score_complete():
     """7 real 2048^2 sim frames through the real QERLIN scorer, revealed over 2 polls."""
-    best = 0.25
+    best = 104.0
     model = FocusModel(best_pitch=best)
-    positions = [float(p) for p in np.linspace(best - 1.0, best + 1.0, 7)]
+    positions = [float(p) for p in np.linspace(best - 6.0, best + 6.0, 7)]
     rng = np.random.default_rng(7)
     frames = [render_frame(model, p, 1.0, shape=(2048, 2048), rng=rng) for p in positions]
     fake, tiled = FakeNats(), FakeTiled()
@@ -183,7 +183,7 @@ async def test_bind_score_complete():
     (done,) = fake.on(SUBJ_COMPLETE)
     assert done["run_uid"] == "runA" and done["motor_field"] == "sm3_pitch"
     assert done["fit"]["ok"], done["fit"]
-    assert abs(done["fit"]["optimal_position"] - best) < 0.3
+    assert abs(done["fit"]["optimal_position"] - best) < 1.5  # lopsided curve: vertex bias
     assert len(done["points"]) == 7
     assert set(done["points"][0]) == {"position", "fwhm_px", "fwhm_mev",
                                       "resolving_power", "score_valid"}

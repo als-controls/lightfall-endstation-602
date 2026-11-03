@@ -38,7 +38,7 @@ from rixs_live.contract import (
 )
 from rixs_live.service import RixsLiveService
 
-BEST = 0.3  # hidden best SM3 pitch (mrad), fixed via an explicit FocusModel
+BEST = 104.0  # hidden best SM3 pitch (native units), fixed via an explicit FocusModel
 FRAME_SHAPE = (2048, 2048)
 COMPLETE_TIMEOUT_S = 120.0
 
@@ -102,6 +102,7 @@ def sim_model(monkeypatch):
     monkeypatch.setenv("LIGHTFALL_SIM_SEED", "1")
     state = get_sim_state()
     monkeypatch.setattr(state, "model", FocusModel(best_pitch=BEST))
+    monkeypatch.setattr(state, "sample_x", None)  # Sample X at its best
     return state.model
 
 
@@ -159,7 +160,7 @@ def _run_scan(writer_client, loop, nc, timings, async_writer=False):
     sm3 = SimSM3Pitch(name="sm3_pitch")
     marana = SimMarana(name="marana", frame_shape=FRAME_SHAPE)
     md = {"rixs": build_rixs_md("marana_image", "sm3_pitch", FRAME_SHAPE, 850.0)}
-    (uid,) = RE(bp.scan([marana], sm3, BEST - 1.0, BEST + 1.0, 7, md=md))
+    (uid,) = RE(bp.scan([marana], sm3, BEST - 6.0, BEST + 6.0, 7, md=md))
     if async_writer:
         tw.close()  # off the event loop: the service keeps working while this drains
     return uid
@@ -208,7 +209,7 @@ async def _smoke(nats_url, tiled_app, async_writer):
     assert done["run_uid"] == uid and done["motor_field"] == "sm3_pitch"
     assert [f["seq_num"] for f in events["frame"]] == [1, 2, 3, 4, 5, 6, 7]
     assert done["fit"]["ok"], done["fit"]
-    assert abs(done["fit"]["optimal_position"] - BEST) < 0.3, done["fit"]
+    assert abs(done["fit"]["optimal_position"] - BEST) < 1.5, done["fit"]  # lopsided
     print(f"\ne2e timing: scan {timings['scan_done'] - timings['t0']:.1f} s, "
           f"bind->complete {timings['complete'] - timings['t0']:.1f} s, "
           f"complete after stop {timings['complete'] - timings['scan_done']:.1f} s; "

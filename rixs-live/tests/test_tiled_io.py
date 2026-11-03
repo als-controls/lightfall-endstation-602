@@ -29,7 +29,7 @@ def _scan(tiled_client, n=3, on_doc=None):
     sm3 = SimSM3Pitch(name="sm3_pitch")
     marana = SimMarana(name="marana", frame_shape=SHAPE)
     md = {"rixs": build_rixs_md("marana_image", "sm3_pitch", SHAPE, 850.0)}
-    (uid,) = RE(bp.scan([marana], sm3, -1.0, 1.0, n, md=md))
+    (uid,) = RE(bp.scan([marana], sm3, 103.0, 105.0, n, md=md))
     return uid
 
 
@@ -44,7 +44,7 @@ def test_tiledwriter_layout_is_n_h_w_and_scalar_column(tiled_client):
     assert {"marana_image", "sm3_pitch", "sm3_pitch_setpoint", "seq_num"} <= set(primary)
     assert primary["marana_image"].shape == (3, *SHAPE)
     assert primary["sm3_pitch"].shape == (3,)
-    assert np.allclose(primary["sm3_pitch"].read(), [-1.0, 0.0, 1.0])
+    assert np.allclose(primary["sm3_pitch"].read(), [103.0, 104.0, 105.0])
     assert primary["marana_image"][1:3].shape == (2, *SHAPE)  # row slicing works
 
 
@@ -54,13 +54,13 @@ def test_reader_reads_real_run(tiled_client):
     reader = FocusRunReader(run, _info(uid))
     got = reader.read_new(0)
     assert [s for s, _, _ in got] == [1, 2, 3]
-    assert np.allclose([p for _, p, _ in got], [-1.0, 0.0, 1.0])
+    assert np.allclose([p for _, p, _ in got], [103.0, 104.0, 105.0])
     stored = run["primary"]["marana_image"].read()
     for i, (_, _, frame) in enumerate(got):
         assert frame.shape == SHAPE
         assert np.array_equal(frame, stored[i])
     tail = reader.read_new(2)
-    assert [(s, p) for s, p, _ in tail] == [(3, 1.0)]
+    assert [(s, p) for s, p, _ in tail] == [(3, 105.0)]
     assert reader.read_new(3) == []
 
 
