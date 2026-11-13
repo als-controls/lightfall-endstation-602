@@ -367,3 +367,37 @@ def test_frame_seq_matches_point_index_with_real_score_cache(rig, fake_ipc):
     assert widths == pytest.approx([FakeScores.fwhm(t) for t in targets])
     assert "preview" not in client.get_score(uid, 1)
     assert np.isfinite(widths).all()
+
+
+
+def test_resent_targets_are_not_measured_twice(rig):
+    """Live run b69213c0: a slow point made tsuchinoko re-send it; the copy got measured."""
+    motors = rig.motors[:2]
+    a = [[104.0, -0.8]]
+    bridge = FakeBridge([{"targets": a, "iteration": 1}])
+
+    class SlowScores(FakeScores):
+        def get_score(self, run_uid, seq_num):
+            if seq_num == 1 and not bridge.batches:  # tsuchinoko's 10 s wait ran out twice
+                bridge.batches += [{"targets": a, "iteration": 2},
+                                   {"targets": a, "iteration": 3}]
+            return super().get_score(run_uid, seq_num)
+
+    docs = _run(qerlin_optimize(rig.cam, motors, None, timeout=0.1, score_timeout=1.0,
+                                poll_interval=0.01, hooks=_hooks(bridge, SlowScores(motors))))
+    assert len(_events(docs, "primary")) == 1
+    assert len(bridge.on("als.602.adaptive.measured")) == 1
+
+def test_new_targets_queued_before_measured_are_kept(rig):
+    motors = rig.motors[:1]
+    bridge = FakeBridge([{"targets": [[104.0]]}])
+
+    class Scores(FakeScores):
+        def get_score(self, run_uid, seq_num):
+            if seq_num == 1 and not bridge.batches:
+                bridge.batches += [{"targets": [[104.0]]}, {"targets": [[106.0]]}]
+            return super().get_score(run_uid, seq_num)
+
+    docs = _run(qerlin_optimize(rig.cam, motors, None, timeout=0.1, score_timeout=1.0,
+                                poll_interval=0.01, hooks=_hooks(bridge, Scores(motors))))
+    assert [e["data"]["sm3_pitch"] for e in _events(docs, "primary")] == [104.0, 106.0]

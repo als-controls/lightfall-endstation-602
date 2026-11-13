@@ -14,7 +14,8 @@ Marana frame. Per target it:
    so gpCAM maximizes sharpness) and ``rixs_fwhm_px`` (NaN when invalid);
 5. reads ``motors + [rixs_score, rixs_fwhm_px]`` into ``primary``, which
    tsuchinoko's TiledReader reads;
-6. publishes ``adaptive.measured``.
+6. publishes ``adaptive.measured``; just before that it drops any queued copies of
+   the batch it has just measured (see ``_drop_resent``).
 
 This module imports nothing from Lightfall at import time (the rixs-live venv
 imports the plugin without Lightfall); ``lightfall_hooks()`` reaches Lightfall's
@@ -24,6 +25,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections import deque
 import uuid
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -123,6 +125,28 @@ def score_of(entry: dict | None, scale: float = SCORE_SCALE) -> tuple[float, flo
     return scale / fwhm, fwhm
 
 
+def _drop_resent(bridge, targets: list, pending: deque) -> int:
+    """Drain queued target messages: drop re-sent copies of ``targets``, keep the rest.
+
+    tsuchinoko's LightfallEngine waits only 10 s for ``adaptive.measured``; when a point
+    takes longer (31 s on the beamline) it re-publishes the same targets, once per 10 s.
+    Measuring those copies adds rows tsuchinoko then reads one step late, so it asks for
+    each point again and every later point is measured twice (live run b69213c0).
+    Called right before publishing ``adaptive.measured``: until tsuchinoko has that
+    signal it cannot have chosen new targets, so a queued message equal to the batch
+    just measured is a re-send. Other messages go to ``pending``, in order.
+    """
+    dropped = 0
+    while (msg := bridge.try_get(TARGETS_SUBJECT)) is not None:
+        if msg.get("targets") == targets:
+            dropped += 1
+        else:
+            pending.append(msg)
+    if dropped:
+        logger.info(f"qerlin_optimize: dropped {dropped} re-sent copies of {targets}")
+    return dropped
+
+
 def _emit(state, signal: str, *args) -> None:
     sig = getattr(state, signal, None)
     if sig is not None:
@@ -193,13 +217,14 @@ def qerlin_optimize(marana, motors, mono=None, exposure_s: float = 1.0,
         yield from bps.sleep(0.5)  # let tsuchinoko process bind_run
 
         point = 0  # == seq_num of the frame in the frames stream
+        pending: deque = deque()  # target messages read while draining re-sends
         consecutive_timeouts = 0
         iteration = 0
         deadline = time.monotonic() + timeout
         while not state.stop_requested:
             while state.pause_requested and not state.stop_requested:
                 yield from bps.sleep(poll_interval)
-            msg = bridge.try_get(TARGETS_SUBJECT)
+            msg = pending.popleft() if pending else bridge.try_get(TARGETS_SUBJECT)
             if msg is None:
                 if time.monotonic() > deadline:
                     _emit(state, "status_changed", "Timeout waiting for targets")
@@ -214,7 +239,7 @@ def qerlin_optimize(marana, motors, mono=None, exposure_s: float = 1.0,
             _emit(state, "iteration_changed", iteration)
             _emit(state, "targets_received", len(targets))
 
-            for target in targets:
+            for i, target in enumerate(targets):
                 if state.stop_requested:
                     break
                 target = list(target)
@@ -250,6 +275,8 @@ def qerlin_optimize(marana, motors, mono=None, exposure_s: float = 1.0,
                 fwhm_sig.put(fwhm)
                 yield from bps.trigger_and_read([*motors, score_sig, fwhm_sig],
                                                 name="primary")
+                if i == len(targets) - 1:
+                    _drop_resent(bridge, msg.get("targets"), pending)
                 bridge.publish(f"{lightfall_prefix}.adaptive.measured", {
                     "iteration": iteration, "n_new_points": 1})
                 if consecutive_timeouts >= MAX_CONSECUTIVE_TIMEOUTS:
