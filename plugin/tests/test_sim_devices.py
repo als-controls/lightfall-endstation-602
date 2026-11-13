@@ -3,7 +3,7 @@ import pytest
 from ophyd.status import Status
 
 from lightfall_endstation_602.sim.devices import (
-    SimMarana, SimMonoEnergy, SimSampleX, SimSM3Pitch, get_sim_state,
+    AxisTracker, SimMarana, SimMonoEnergy, SimSampleX, SimSM3Pitch, get_sim_state,
 )
 from lightfall_endstation_602.sim.model import FocusModel
 from test_sim_model import _width
@@ -12,13 +12,13 @@ from test_sim_model import _width
 @pytest.fixture
 def rig():
     state = get_sim_state()
-    old = state.model, state.sm3, state.sample_x
+    old = state.model, state.axes
     state.model = FocusModel(best_pitch=104.0, best_sample_x=-0.8)
-    state.sample_x = None
+    state.axes = AxisTracker()
     sm3 = SimSM3Pitch(name="sm3_pitch")
     cam = SimMarana(name="marana", frame_shape=(256, 256))
     yield state, sm3, cam
-    state.model, state.sm3, state.sample_x = old
+    state.model, state.axes = old
 
 
 def test_marana_trigger_reads_current_pitch(rig):
@@ -35,7 +35,7 @@ def test_marana_trigger_reads_current_pitch(rig):
 def test_marana_trigger_reads_current_sample_x(rig):
     state, sm3, cam = rig
     sx = SimSampleX(name="sample_x")
-    assert state.sample_x is sx
+    assert state.axes.resolve("sample_x", SimSampleX) is sx
     sm3.set(state.model.best_pitch).wait(2)
     sx.set(state.model.best_sample_x).wait(2)
     cam.trigger().wait(2)
@@ -105,3 +105,73 @@ def test_describe_declares_uint16(rig):
     assert cam.image.get().dtype == np.uint16
     cam.trigger().wait(2)
     assert cam.image.get().dtype == np.uint16
+
+
+def _lightfall_load(mock_first=True):
+    """Load the QERLIN happi DB the way Lightfall does, with the mock backend enabled.
+
+    DeviceCatalog registers the mock backend first; its ``sample_x`` (a SynAxis) and
+    ``mono_energy`` win those names, so the catalog skips the QERLIN entries and
+    instantiates only the rest. HappiBackend still lists the skipped ones, and its
+    ``reconnect_failed_devices`` pass (the ca-tunnel-retry worker) builds them anyway.
+    """
+    from lightfall.devices.backends.mock import MockBackend
+    from lightfall_endstation_602.backend import QerlinSimBackendPlugin
+
+    mock = MockBackend()
+    mock.connect()
+    taken = {d.name for d in mock.get_all_devices()}
+    happi = QerlinSimBackendPlugin().create_backend()
+    happi.connect()
+    built = {}
+    for info in happi.load_metadata():
+        if info.name in taken:
+            continue  # catalog: "conflicts with existing device, skipping"
+        built[info.name] = info._ophyd_device = happi.instantiate(info)
+    connected, _ = happi.reconnect_failed_devices(timeout=1.0)
+    assert connected == 2  # the skipped sample_x and mono_energy got built anyway
+    catalog = {**built, **{n: mock.get_ophyd_device(n) for n in ("sample_x", "mono_energy")}}
+    return catalog
+
+
+def test_marana_follows_the_catalog_sample_x_under_lightfall_loading(rig):
+    """Regression (live run b69213c0): the Marana ignored sample_x moves in Lightfall."""
+    from ophyd.sim import SynAxis
+    state, _, _ = rig
+    devices = _lightfall_load()
+    sx, sm3, cam = devices["sample_x"], devices["sm3_pitch"], devices["marana"]
+    assert type(sx) is SynAxis  # the catalog's sample_x is the mock one
+    cam.frame_shape = (256, 256)
+    sm3.set(98.0).wait(2)
+    widths = {}
+    for x in (-0.83, -0.65, -0.95):
+        sx.set(x).wait(2)
+        cam.trigger().wait(2)
+        widths[x] = _width(cam.image.get())
+    assert widths[-0.65] > 2 * widths[-0.83]
+    assert widths[-0.95] > 1.5 * widths[-0.83]
+
+
+def test_tracker_sweep_finds_motors_built_before_it():
+    """Lightfall builds the mock backend before this plugin is imported."""
+    from ophyd.sim import SynAxis
+    early = SynAxis(name="sample_x")
+    tracker = AxisTracker()
+    assert tracker.resolve("sample_x", SimSampleX) is None
+    tracker.sweep()
+    assert tracker.resolve("sample_x", SimSampleX) is not None
+    early.set(-0.7).wait(2)
+    assert tracker.resolve("sample_x", SimSampleX) is early
+
+
+def test_tracker_prefers_the_moved_motor_then_sim_instance(rig):
+    from ophyd.sim import SynAxis
+    state, _, _ = rig
+    other = SynAxis(name="sample_x")
+    sim = SimSampleX(name="sample_x")
+    assert state.axes.resolve("sample_x", SimSampleX) is sim  # nothing moved yet
+    other.set(-0.7).wait(2)
+    assert state.axes.resolve("sample_x", SimSampleX) is other
+    assert state.axes.resolve("sample_x", SimSampleX) is other  # sticky until another moves
+    sim.set(-0.9).wait(2)
+    assert state.axes.resolve("sample_x", SimSampleX) is sim

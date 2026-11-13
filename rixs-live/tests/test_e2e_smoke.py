@@ -21,7 +21,9 @@ import pytest
 from bluesky import RunEngine
 from bluesky_tiled_plugins import TiledWriter
 from lightfall_endstation_602.contract import build_rixs_md
-from lightfall_endstation_602.sim.devices import SimMarana, SimSM3Pitch, get_sim_state
+from lightfall_endstation_602.sim.devices import (
+    AxisTracker, SimMarana, SimSM3Pitch, get_sim_state,
+)
 from lightfall_endstation_602.sim.model import FocusModel
 from tiled.catalog import from_uri as catalog_from_uri
 from tiled.client import Context, from_context
@@ -102,7 +104,7 @@ def sim_model(monkeypatch):
     monkeypatch.setenv("LIGHTFALL_SIM_SEED", "1")
     state = get_sim_state()
     monkeypatch.setattr(state, "model", FocusModel(best_pitch=BEST))
-    monkeypatch.setattr(state, "sample_x", None)  # Sample X at its best
+    monkeypatch.setattr(state, "axes", AxisTracker())  # no Sample X: at its best
     return state.model
 
 

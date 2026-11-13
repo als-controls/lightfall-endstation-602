@@ -21,7 +21,7 @@ from bluesky import RunEngine
 from bluesky_tiled_plugins import TiledWriter
 from lightfall_endstation_602.optimize import OptimizeHooks, qerlin_optimize
 from lightfall_endstation_602.sim.devices import (
-    SimMarana, SimSampleX, SimSM3Pitch, get_sim_state,
+    AxisTracker, SimMarana, SimSampleX, SimSM3Pitch, get_sim_state,
 )
 from lightfall_endstation_602.sim.model import FocusModel
 from test_e2e_smoke import _nats_binary, live_tiled_app, nats_server  # noqa: F401
@@ -54,8 +54,7 @@ DONE_TIMEOUT_S = 180.0
 def sim_2d(monkeypatch):
     state = get_sim_state()
     monkeypatch.setattr(state, "model", FocusModel(best_pitch=104.0, best_sample_x=-0.80))
-    monkeypatch.setattr(state, "sm3", None)
-    monkeypatch.setattr(state, "sample_x", None)
+    monkeypatch.setattr(state, "axes", AxisTracker())
     return state
 
 

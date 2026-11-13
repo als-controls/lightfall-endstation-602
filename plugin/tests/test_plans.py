@@ -7,7 +7,7 @@ from bluesky import RunEngine
 from lightfall_endstation_602.plans import qerlin_focus_scan
 from lightfall_endstation_602.plans import motor_units
 from lightfall_endstation_602.sim.devices import (
-    SimMarana, SimMonoEnergy, SimSampleX, SimSM3Pitch, get_sim_state,
+    AxisTracker, SimMarana, SimMonoEnergy, SimSampleX, SimSM3Pitch, get_sim_state,
 )
 from lightfall_endstation_602.sim.model import FocusModel
 
@@ -15,13 +15,13 @@ from lightfall_endstation_602.sim.model import FocusModel
 @pytest.fixture
 def rig():
     state = get_sim_state()
-    old = state.model, state.sm3, state.sample_x
-    state.model = FocusModel(best_pitch=104.0)
+    old = state.model, state.axes
+    state.model, state.axes = FocusModel(best_pitch=104.0), AxisTracker()
     sm3 = SimSM3Pitch(name="sm3_pitch")
     mono = SimMonoEnergy(name="mono_energy")
     cam = SimMarana(name="marana", frame_shape=(2048, 2048))
     yield cam, sm3, mono
-    state.model, state.sm3, state.sample_x = old
+    state.model, state.axes = old
 
 
 def _run(plan):

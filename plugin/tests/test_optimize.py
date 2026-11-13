@@ -20,7 +20,7 @@ from lightfall_endstation_602.optimize import (
     score_of,
 )
 from lightfall_endstation_602.sim.devices import (
-    SimMarana, SimMonoEnergy, SimSampleX, SimSM3Pitch, get_sim_state,
+    AxisTracker, SimMarana, SimMonoEnergy, SimSampleX, SimSM3Pitch, get_sim_state,
 )
 from lightfall_endstation_602.sim.model import FocusModel
 
@@ -87,15 +87,15 @@ class FakeScores:
 @pytest.fixture
 def rig():
     state = get_sim_state()
-    old = state.model, state.sm3, state.sample_x
-    state.model = FocusModel(best_pitch=104.0)
+    old = state.model, state.axes
+    state.model, state.axes = FocusModel(best_pitch=104.0), AxisTracker()
     cam = SimMarana(name="marana", frame_shape=(64, 64))
     sm3 = SimSM3Pitch(name="sm3_pitch")
     sx = SimSampleX(name="sample_x")
     aux = SynAxis(name="aux")
     mono = SimMonoEnergy(name="mono_energy")
     yield SimpleNamespace(cam=cam, motors=[sm3, sx, aux], mono=mono)
-    state.model, state.sm3, state.sample_x = old
+    state.model, state.axes = old
 
 
 def _hooks(bridge, client):
