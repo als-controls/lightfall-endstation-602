@@ -8,7 +8,7 @@ description: "N-D focusing on the QERLIN (ALS 6.0.2) RIXS spectrometer with gpCA
 Optimize two or more focusing motors **together**. gpCAM (running inside tsuchinoko)
 picks each next point, the `qerlin_optimize` plan moves there and takes one Marana
 frame, and rixs-live scores that frame. The objective is **maximize `rixs_score`**
-= 1 / FWHM (px) of the zeroth-order line, so a sharper line scores higher. A frame the
+= 100 / FWHM (px) of the zeroth-order line, so a sharper line scores higher. A frame the
 service cannot score (no line, too broad) has score 0.
 
 For a single motor, use the `qerlin_focusing` skill (coarse/fine 1D scans and a parabola
@@ -40,17 +40,59 @@ the defaults table.
    (30 for 2D, 45 for 3D) unless the user gives one. Tell the user the cost before
    starting: about **31 s per point** on the real beamline (exposure, readout, motion),
    so 30 points is about 15 minutes and 45 points about 23 minutes. Get their go-ahead.
-4. **Autonomous-experiment workflow.** Load the `autonomous_experiment` skill and follow
-   its steps for the design and the tsuchinoko side, with these QERLIN specifics:
-   - *Design* (gpCAM `experiment-designer`): the objective is to maximize `rixs_score`;
-     the input space is the chosen motors with the agreed bounds. A UCB-style
-     acquisition suits optimization (exploit with some exploration); the default
-     `variance` acquisition only explores. Use about 2 x N + 3 initial points.
-   - *Discover, reset, configure*: `tsuchinoko_discover`, `tsuchinoko_status` /
-     `tsuchinoko_stop` until `Inactive`, then `tsuchinoko_configure` with
-     `parameter_bounds` in the motor order from step 2.
-   - *Pre-flight*: read each motor with `lightfall_read_device` and check it lies inside
-     its bounds; if not, ask before moving it or widen the bounds.
+4. **Configure tsuchinoko BEFORE the plan starts.** Load the `autonomous_experiment`
+   skill for the general workflow, but use this tested QERLIN design instead of designing
+   one from scratch. Unconfigured, tsuchinoko runs its default design (variance-only
+   acquisition, default hyperparameters): it only explores, proposes points on the bounds
+   and repeats them, and never converges. So, in this order, every time:
+
+   1. `tsuchinoko_discover()`; if empty, stop and ask the user to start tsuchinoko.
+   2. `tsuchinoko_status()`. Unless `state` is `Inactive`, call `tsuchinoko_stop()` and
+      poll `tsuchinoko_status()` until `state == "Inactive"` (configure does not reset
+      data; the stop does).
+   3. `tsuchinoko_configure(payload=...)` with this payload (also in
+      `references/gpcam-configure.json`), for `sm3_pitch` then `sample_x`:
+
+      ```json
+      {
+        "parameter_bounds": [[98.0, 116.0], [-0.95, -0.65]],
+        "acquisition_function": "ucb",
+        "kernel": "matern_3_2",
+        "initial_points": 7,
+        "hyperparameters": [25.0, 4.0, 0.08],
+        "hyperparameter_bounds": [[0.25, 2500.0], [1.0, 20.0], [0.01, 0.3]],
+        "training_method": "global",
+        "global_training": [8, 12, 16, 20, 25]
+      }
+      ```
+
+      It must return `success: true`; if not, fix the payload and retry (stop first).
+      No `tsuchinoko_upload_design_code` is needed: everything here is built in.
+   4. *Pre-flight*: read each motor with `lightfall_read_device` and check it lies inside
+      its bounds; if not, ask before moving it, or widen the bounds and redo 2-3.
+   5. Only now launch the plan (step 5).
+
+   What the payload means, and how to adapt it (keep the motor order everywhere):
+   - `parameter_bounds`: the bounds agreed in step 2, one `[lo, hi]` per motor.
+   - `acquisition_function: "ucb"`: posterior mean + 3 sigma, maximized; balances
+     exploiting the sharpest region with exploring uncertain ones (`variance` only
+     explores).
+   - `kernel: "matern_3_2"`, anisotropic: `hyperparameters` = [signal variance, one
+     length scale per motor]. 25.0 = (5 score units)^2 suits `rixs_score` = 100/FWHM px
+     (about 4 to 20). Length scales: about a quarter of each motor's bound span (4.0 for
+     an 18-unit pitch span, 0.08 mm for a 0.3 mm Sample X span); `hyperparameter_bounds`
+     per length scale about [span/20, span] (pitch [1, 20], Sample X [0.01, 0.3] mm). For
+     other bounds or a third motor, add one length scale and one bound pair per motor by
+     the same rule; the signal-variance entries stay [25.0] and [0.25, 2500.0].
+   - `initial_points: 7` random points first (2 x N + 3; use 9 for 3 motors).
+   - `training_method: "global"` with `global_training` milestones: hyperparameters are
+     re-fit at those data counts.
+   - Noise: tsuchinoko tells gpCAM every measurement with variance 1.0 (fixed), which is
+     why `rixs_score` is 100/FWHM and not 1/FWHM; do not send `noise_function` (gpCAM
+     rejects a noise function together with measured variances) or `noise_variances`.
+   - Repeats: tsuchinoko has no setting against re-measuring a point. `qerlin_optimize`
+     drops tsuchinoko's re-sent copies of a target it is already measuring; gpCAM may
+     still ask for the same point twice near the optimum, which is fine.
 5. **Run.** Launch `qerlin_optimize`, **not** `adaptive_experiment`:
 
    ```
@@ -63,7 +105,8 @@ the defaults table.
    )
    ```
 
-   `motors` must be in the same order as `parameter_bounds`. `exposure_s` is seconds;
+   Never start it before step 4's configure succeeded. `motors` must be in the same
+   order as `parameter_bounds`. `exposure_s` is seconds;
    keep it the same as in any earlier focus scans. `timeout` is how long the plan waits
    for new targets before closing the run; `score_timeout` is how long it waits for
    each frame's score.
@@ -75,8 +118,9 @@ the defaults table.
    - the optimum has settled: the best point has not improved for about 5 x N points and
      the posterior uncertainty around it is small (ask the user to confirm from the
      adaptive widgets if unsure).
-   The plan then closes its run after `timeout` without new targets; wait with
-   `lightfall_wait_for_idle`.
+   `qerlin_optimize` sees the stop (or tsuchinoko going `Inactive` on its own) and closes
+   its run within a few seconds; `timeout` is only the fallback if tsuchinoko vanishes.
+   Wait with `lightfall_wait_for_idle`.
 8. **Read the result.** Call `get_focus_result` (it defaults to the last bound run, which
    is the optimization run). For an N-D run `fit.ok` is false with reason
    "multi-motor run: no 1D fit"; that is expected. `best_measured.positions` holds every
@@ -105,6 +149,7 @@ the defaults table.
 - If the run fails with "rixs-live scored none of the last 3 frames", the service is down
   or not bound: call `rixs_service_status`, tell the user, and do not restart until it
   is up.
-- Always stop tsuchinoko before reconfiguring (see the autonomous_experiment skill), and
+- Always configure tsuchinoko (step 4) before `qerlin_optimize`, and always stop it
+  (until `Inactive`) before reconfiguring; and
   never start a second `qerlin_optimize` or `adaptive_experiment` while one is running.
 - Do not report `best_measured` as a fitted optimum; it is the best measured point.

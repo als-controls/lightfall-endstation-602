@@ -27,7 +27,7 @@ its procedure.
 When the user asks to optimize several motors together (2D/3D, e.g. SM3 pitch and Sample X at
 once), load the `qerlin_optimization` skill instead: gpCAM (inside tsuchinoko) picks each
 point, the `qerlin_optimize` plan measures it and rixs-live scores the frame (maximize
-`rixs_score` = 1/FWHM px). It builds on the `autonomous_experiment` skill. Always ask which
+`rixs_score` = 100/FWHM px). It builds on the `autonomous_experiment` skill. Always ask which
 motors and bounds to use; never assume them.
 
 Working habits:

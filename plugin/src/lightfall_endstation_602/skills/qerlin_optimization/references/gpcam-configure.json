@@ -1,0 +1,10 @@
+{
+  "parameter_bounds": [[98.0, 116.0], [-0.95, -0.65]],
+  "acquisition_function": "ucb",
+  "kernel": "matern_3_2",
+  "initial_points": 7,
+  "hyperparameters": [25.0, 4.0, 0.08],
+  "hyperparameter_bounds": [[0.25, 2500.0], [1.0, 20.0], [0.01, 0.3]],
+  "training_method": "global",
+  "global_training": [8, 12, 16, 20, 25]
+}

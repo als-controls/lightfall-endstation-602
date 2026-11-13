@@ -10,8 +10,8 @@ Marana frame. Per target it:
    reads the images from that stream and scores each one);
 3. polls the client's score cache for that frame (same run uid, ``seq_num`` = the
    point index), yielding ``bps.sleep`` between polls so the RunEngine stays live;
-4. sets ``rixs_score`` (1/FWHM px when valid, else 0, so gpCAM maximizes
-   sharpness) and ``rixs_fwhm_px`` (NaN when invalid);
+4. sets ``rixs_score`` (``SCORE_SCALE`` / FWHM px = 100/FWHM when valid, else 0,
+   so gpCAM maximizes sharpness) and ``rixs_fwhm_px`` (NaN when invalid);
 5. reads ``motors + [rixs_score, rixs_fwhm_px]`` into ``primary``, which
    tsuchinoko's TiledReader reads;
 6. publishes ``adaptive.measured``.
@@ -42,6 +42,11 @@ FWHM_FIELD = "rixs_fwhm_px"
 TARGETS_SUBJECT = "tsuchinoko.targets"
 BIND_SUBJECT = "tsuchinoko.experiment.bind_run"
 MAX_CONSECUTIVE_TIMEOUTS = 3
+# rixs_score = SCORE_SCALE / FWHM px. tsuchinoko's TiledReader tells gpCAM every
+# measurement with variance 1.0 (fixed; a noise_function cannot override it), so the
+# score must span many units: at 1/FWHM (0.04..0.2) the GP saw pure noise, trained to
+# a flat model and only explored. At 100/FWHM best focus (~5 px) scores ~20.
+SCORE_SCALE = 100.0
 
 
 class ScoreTimeoutError(RuntimeError):
@@ -104,7 +109,7 @@ def _field(device) -> str:
     return (hints.get("fields") or [device.name])[0]
 
 
-def score_of(entry: dict | None) -> tuple[float, float]:
+def score_of(entry: dict | None, scale: float = SCORE_SCALE) -> tuple[float, float]:
     """``(rixs_score, rixs_fwhm_px)`` from a cached frame score (None = timed out)."""
     if not entry:
         return 0.0, math.nan
@@ -115,7 +120,7 @@ def score_of(entry: dict | None) -> tuple[float, float]:
         fwhm = math.nan
     if not entry.get("score_valid") or not math.isfinite(fwhm) or fwhm <= 0:
         return 0.0, math.nan
-    return 1.0 / fwhm, fwhm
+    return scale / fwhm, fwhm
 
 
 def _emit(state, signal: str, *args) -> None:
@@ -129,7 +134,7 @@ def _emit(state, signal: str, *args) -> None:
 
 def qerlin_optimize(marana, motors, mono=None, exposure_s: float = 1.0,
                     timeout: float = 300.0, score_timeout: float = 60.0, *,
-                    poll_interval: float = 0.1, hooks: OptimizeHooks | None = None,
+                    score_scale: float = SCORE_SCALE, poll_interval: float = 0.1, hooks: OptimizeHooks | None = None,
                     md: dict | None = None):
     """Measure the targets tsuchinoko/gpCAM sends; score each Marana frame via rixs-live.
 
@@ -238,7 +243,7 @@ def qerlin_optimize(marana, motors, mono=None, exposure_s: float = 1.0,
                         f"recording score 0")
                 else:
                     consecutive_timeouts = 0
-                score, fwhm = score_of(entry)
+                score, fwhm = score_of(entry, score_scale)
                 # put(), not bps.mv: a soft Signal's set() status waits for the
                 # readback to equal the setpoint, which never happens for NaN.
                 score_sig.put(score)
