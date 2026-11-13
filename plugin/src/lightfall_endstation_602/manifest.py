@@ -16,5 +16,7 @@ manifest = PluginManifest(
                     preload=True),
         PluginEntry("tool", "qerlin_focusing",
                     "lightfall_endstation_602.tools:QerlinFocusingTools"),
+        PluginEntry("tool", "qerlin_optimization",
+                    "lightfall_endstation_602.tools:QerlinOptimizationSkill"),
     ],
 )

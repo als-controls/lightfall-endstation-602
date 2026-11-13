@@ -40,6 +40,26 @@ py -3.12 -m venv .venv
 Tests: `../../lightfall/.venv/Scripts/python -m pytest` in `plugin/`;
 `.venv/Scripts/python -m pytest` in `rixs-live/`.
 
+## What the plugin contributes
+
+- **Devices** (`qerlin_sim` backend): `marana` (2048x2048 frames), `sm3_pitch`,
+  `sample_x` (mm), `mono_energy` (eV). See the table in the live demo checklist.
+- **Plans** (category `rixs`):
+  - `qerlin_focus_scan(marana, motor, mono, start, stop, num, exposure_s)`: a 1D
+    focus scan along any motor; rixs-live fits FWHM vs position.
+  - `qerlin_optimize(marana, motors, mono=None, exposure_s, timeout, score_timeout)`:
+    N-D optimization (N >= 1 motors) driven by tsuchinoko/gpCAM. Each target gets one
+    frame in the `frames` stream; rixs-live scores it and the plan writes
+    `rixs_score` (1/FWHM px, 0 when unscorable) and `rixs_fwhm_px` with the motors to
+    `primary`, which tsuchinoko reads. Three unscored frames in a row fail the run.
+    It shows Lightfall's adaptive-plan panel (Stop/Pause).
+- **Panel**: "QERLIN Focus" (Analysis).
+- **Agent tools**: `qerlin_focusing` (`rixs_service_status`, `get_focus_result`, the
+  `qerlin_focusing` skill) and `qerlin_optimization` (skill only).
+- **Agent**: `qerlin` (`agents/qerlin.md`), with the `qerlin_focusing`,
+  `qerlin_optimization`, `autonomous_experiment` and `plan_review` skills and
+  Lightfall's `autonomous_experiment` (tsuchinoko) tools.
+
 ## Demo
 
 ### Headless smoke (run 2026-10-30)
@@ -138,6 +158,41 @@ Two scripts live outside git under
    focuses SM3 pitch first and Sample X second (coarse then fine each), reading
    `get_focus_result` after every scan, moving each motor to its optimum and
    re-checking Sample X after any pitch change.
+
+### N-D optimization (gpCAM via tsuchinoko)
+
+To optimize several motors at once (e.g. SM3 pitch and Sample X together), gpCAM picks
+each point inside tsuchinoko, `qerlin_optimize` measures it, and rixs-live scores the
+frame; gpCAM maximizes `rixs_score` = 1/FWHM px.
+
+1. Do steps 1-4 of the checklist above (NATS, rixs-live, backend, panel) with the same
+   broker and topic prefix everywhere. Lightfall needs gpCAM installed (with its
+   skills) for the agent's design step.
+2. **Start tsuchinoko** on the same broker and prefix, from its own venv:
+   `C:/Users/rp/PycharmProjects/tsuchinoko/.venv/Scripts/tsuchinoko run --nats-url nats://127.0.0.1:4222 --lightfall-prefix <ipc_topic_prefix>`.
+   It reads the run's `primary` stream from the same Tiled that Lightfall writes to
+   (URL and key come in the plan's `bind_run`).
+3. **Ask the qerlin agent**, e.g. "optimize SM3 pitch and Sample X together with
+   gpCAM". It loads the `qerlin_optimization` skill: it checks `rixs_service_status`,
+   asks which motors and bounds (suggesting SM3 pitch ~98-116 and Sample X ~-0.95 to
+   -0.65 mm), proposes a budget of ~15 points per motor at ~31 s per point, designs the
+   GP with gpCAM's skills, resets and configures tsuchinoko, checks the motors are in
+   bounds, and launches `qerlin_optimize` (not `adaptive_experiment`). When the budget
+   is reached or the optimum settles it stops tsuchinoko, moves to the best point and
+   confirms it with a single-exposure `qerlin_focus_scan`.
+4. Watch progress in the adaptive visualization widgets and the QERLIN Focus panel. The
+   service's result for the run (`get_focus_result`) has no 1D fit ("multi-motor run:
+   no 1D fit"); `best_measured.positions` holds the best measured point.
+
+Run it by hand from the Plans panel or `lightfall_run_plan` with
+`{"marana": "marana", "motors": ["sm3_pitch", "sample_x"], "mono": "mono_energy"}`
+after configuring tsuchinoko (the `parameter_bounds` axes in the same order as
+`motors`). The plan refuses to start until the rixs binder is enabled (open the QERLIN
+Focus panel or call `rixs_service_status`).
+
+Headless check: `rixs-live/tests/test_e2e_optimize.py` runs the plan over a real
+nats-server, in-process Tiled and rixs-live, with a fake tsuchinoko that reads
+`rixs_score` back from `primary` the way tsuchinoko's TiledReader does.
 
 An aborted or failed scan completes as soon as its rows stop arriving
 (`drain_settle_s`): the stop document's `exit_status` and `num_events` are

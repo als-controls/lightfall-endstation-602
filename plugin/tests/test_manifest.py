@@ -11,6 +11,7 @@ EXPECTED = {
     ("plan", "qerlin_optimize"): "lightfall_endstation_602.plan_plugin:QerlinOptimizePlanPlugin",
     ("panel", "qerlin_focus"): "lightfall_endstation_602.panel:QerlinFocusPanelPlugin",
     ("tool", "qerlin_focusing"): "lightfall_endstation_602.tools:QerlinFocusingTools",
+    ("tool", "qerlin_optimization"): "lightfall_endstation_602.tools:QerlinOptimizationSkill",
 }
 
 

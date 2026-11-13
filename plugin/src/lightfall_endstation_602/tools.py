@@ -166,15 +166,18 @@ class QerlinFocusingTools(ToolPlugin):
         @tool(
             name="get_focus_result",
             description=(
-                "Fetch the fitted focus curve for a qerlin_focus_scan run from the rixs-live "
-                "service. run_uid is optional and defaults to the most recently started "
-                "(bound) focus scan. The service finishes scoring a few seconds after the "
+                "Fetch the fitted focus curve for a qerlin_focus_scan (or qerlin_optimize) "
+                "run from the rixs-live service. run_uid is optional and defaults to the "
+                "most recently started (bound) run. The service finishes scoring a few seconds after the "
                 "RunEngine goes idle; this tool waits for that analysis (up to wait_s "
                 "seconds, default 60, max 300) and then returns {run_uid, motor_field, "
                 "motor_units, points:[{position, fwhm_px, fwhm_mev, resolving_power, "
                 "score_valid}], fit:{ok, optimal_position, coeffs, reason}, best_measured}; "
                 "positions are in the scanned motor's units (motor_units, \"\" = native "
-                "units, e.g. SM3 pitch). Errors if the "
+                "units, e.g. SM3 pitch). A qerlin_optimize (multi-motor) run also has "
+                "motor_fields, per-point positions {motor: value} and "
+                "best_measured.positions, and fit.ok false ('multi-motor run: no 1D "
+                "fit'). Errors if the "
                 "service is down, the run is unknown to it, or the analysis is still "
                 "running after wait_s."
             ),
@@ -222,3 +225,42 @@ class QerlinFocusingTools(ToolPlugin):
             return mcp_result(result)
 
         return [rixs_service_status, get_focus_result]
+
+
+class QerlinOptimizationSkill(ToolPlugin):
+    """The ``qerlin_optimization`` skill: N-D focusing with gpCAM via tsuchinoko.
+
+    Skill only: the tools it needs come from ``qerlin_focusing`` (rixs-live),
+    ``autonomous_experiment`` (tsuchinoko) and Lightfall's plan/device tools; the
+    plan is ``qerlin_optimize``.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        _register_agent_dir()
+
+    @property
+    def name(self) -> str:
+        return "qerlin_optimization"
+
+    @property
+    def display_name(self) -> str:
+        return "QERLIN Optimization"
+
+    @property
+    def description(self) -> str:
+        return ("N-D focus optimization (several motors at once) for the QERLIN (6.0.2) "
+                "RIXS spectrometer: gpCAM via tsuchinoko picks points, rixs-live scores them")
+
+    @property
+    def category(self) -> str:
+        return "acquisition"
+
+    def get_skill_dir(self) -> Path | None:
+        return _PKG_DIR / "skills" / "qerlin_optimization"
+
+    def get_references_dir(self) -> Path | None:
+        return _PKG_DIR / "skills" / "qerlin_optimization" / "references"
+
+    def create_tools(self) -> list[Any]:
+        return []
