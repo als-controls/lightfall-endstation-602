@@ -28,8 +28,9 @@ from lightfall_endstation_602.sim.model import FocusModel
 class FakeBridge:
     """NATSPlanBridge stand-in: targets are queued up front, publishes recorded."""
 
-    def __init__(self, batches):
+    def __init__(self, batches, stops=()):
         self.batches = list(batches)
+        self.stops = list(stops)  # tsuchinoko.experiment.stop requests seen on the bus
         self.subscribed = []
         self.published = []
         self.cleaned = False
@@ -38,6 +39,8 @@ class FakeBridge:
         self.subscribed.append(subject)
 
     def try_get(self, subject):
+        if subject == "tsuchinoko.experiment.stop":
+            return self.stops.pop(0) if self.stops else None
         assert subject == "tsuchinoko.targets"
         return self.batches.pop(0) if self.batches else None
 
@@ -149,7 +152,8 @@ def test_optimize_streams_scores_and_handshake(rig, n):
                     "tiled_api_key": "secret-key", "proxy_url": "socks5://localhost:1080",
                     "lightfall_prefix": "als.602", "motor_names": names,
                     "detector_name": "rixs_score"}
-    assert bridge.subscribed == ["tsuchinoko.targets"] and bridge.cleaned
+    assert bridge.subscribed == ["tsuchinoko.targets", "tsuchinoko.experiment.stop"]
+    assert bridge.cleaned
     assert hooks.state.stop_requested is False  # reset at start
 
     frames = _events(docs, "frames")
@@ -320,6 +324,9 @@ def test_lightfall_hooks_wire_lightfall(monkeypatch, fake_ipc):
     monkeypatch.setattr(runtime, "_binder", SimpleNamespace(enabled=True))
     hooks = optimize.lightfall_hooks()
     assert isinstance(hooks.bridge, NATSPlanBridge) and hooks.client is client
+    fake_ipc.replies["tsuchinoko.status"] = {"status": "ok", "state": "Running"}
+    assert hooks.status() == {"status": "ok", "state": "Running"}
+    assert fake_ipc.requests[-1] == ("tsuchinoko.status", {})
     assert hooks.state is adaptive._state
     assert hooks.credentials is adaptive._get_tiled_credentials
 
@@ -401,3 +408,101 @@ def test_new_targets_queued_before_measured_are_kept(rig):
     docs = _run(qerlin_optimize(rig.cam, motors, None, timeout=0.1, score_timeout=1.0,
                                 poll_interval=0.01, hooks=_hooks(bridge, Scores(motors))))
     assert [e["data"]["sm3_pitch"] for e in _events(docs, "primary")] == [104.0, 106.0]
+
+
+
+def _timed(plan):
+    import time
+    t0 = time.monotonic()
+    docs = _run(plan)
+    return docs, time.monotonic() - t0
+
+
+def test_stop_request_on_the_bus_closes_the_run_promptly(rig):
+    """tsuchinoko_stop is seen as it is sent; the run does not wait for ``timeout``."""
+    motors = rig.motors[:1]
+    bridge = FakeBridge([{"targets": [[104.0]]}])
+
+    class StopAfterFirst(FakeScores):
+        def get_score(self, run_uid, seq_num):
+            bridge.stops.append({})  # the agent calls tsuchinoko_stop
+            return super().get_score(run_uid, seq_num)
+
+    docs, dt = _timed(qerlin_optimize(rig.cam, motors, None, timeout=30.0, poll_interval=0.01,
+                                      hooks=_hooks(bridge, StopAfterFirst(motors))))
+    assert dt < 5.0
+    assert len(_events(docs, "primary")) == 1
+    assert next(d for k, d in docs if k == "stop")["exit_status"] == "success"
+
+
+def test_stop_request_mid_batch_skips_the_rest(rig):
+    motors = rig.motors[:1]
+    bridge = FakeBridge([{"targets": [[104.0], [105.0], [106.0]]}])
+
+    class StopAfterFirst(FakeScores):
+        def get_score(self, run_uid, seq_num):
+            bridge.stops.append({})
+            return super().get_score(run_uid, seq_num)
+
+    docs, dt = _timed(qerlin_optimize(rig.cam, motors, None, timeout=30.0, poll_interval=0.01,
+                                      hooks=_hooks(bridge, StopAfterFirst(motors))))
+    assert dt < 5.0 and len(_events(docs, "primary")) == 1
+
+
+@pytest.mark.parametrize("ended", ["Inactive", "Stopping", "Exiting"])
+def test_status_inactive_closes_the_run_promptly(rig, ended):
+    """tsuchinoko went Inactive by itself (budget reached, stopped from its own UI)."""
+    motors = rig.motors[:1]
+    bridge = FakeBridge([{"targets": [[104.0]]}])
+    hooks = _hooks(bridge, FakeScores(motors))
+    hooks.status = lambda: {"status": "ok", "state": ended}
+    docs, dt = _timed(qerlin_optimize(rig.cam, motors, None, timeout=30.0, poll_interval=0.01,
+                                      status_interval=0.05, hooks=hooks))
+    assert dt < 5.0
+    assert len(_events(docs, "primary")) == 1
+    assert next(d for k, d in docs if k == "stop")["exit_status"] == "success"
+
+
+def test_inactive_before_the_experiment_started_is_not_its_end(rig):
+    """Right after bind_run tsuchinoko may still read Inactive: only ``timeout`` ends that."""
+    motors = rig.motors[:1]
+    states = iter(["Inactive", "Inactive", "Running"])
+    bridge = FakeBridge([])
+    hooks = _hooks(bridge, FakeScores(motors))
+    asked = []
+
+    def status():
+        asked.append(1)
+        st = next(states, "Inactive")
+        if st == "Running":
+            bridge.batches.append({"targets": [[104.0]]})
+        return {"status": "ok", "state": st}
+
+    hooks.status = status
+    docs, dt = _timed(qerlin_optimize(rig.cam, motors, None, timeout=30.0, poll_interval=0.01,
+                                      status_interval=0.05, hooks=hooks))
+    assert len(_events(docs, "primary")) == 1  # measured once it started, then ended
+    assert len(asked) >= 4 and dt < 5.0
+
+
+def test_no_status_reply_falls_back_to_timeout(rig):
+    motors = rig.motors[:1]
+    hooks = _hooks(FakeBridge([{"targets": [[104.0]]}]), FakeScores(motors))
+    hooks.status = lambda: None  # tsuchinoko gone
+    docs, dt = _timed(qerlin_optimize(rig.cam, motors, None, timeout=0.5, poll_interval=0.01,
+                                      status_interval=0.05, hooks=hooks))
+    assert dt >= 0.5
+    assert next(d for k, d in docs if k == "stop")["exit_status"] == "success"
+
+
+def test_status_errors_do_not_end_the_run(rig):
+    motors = rig.motors[:1]
+    hooks = _hooks(FakeBridge([{"targets": [[104.0]]}]), FakeScores(motors))
+
+    def boom():
+        raise TimeoutError("no reply")
+
+    hooks.status = boom
+    docs, dt = _timed(qerlin_optimize(rig.cam, motors, None, timeout=0.3, poll_interval=0.01,
+                                      status_interval=0.05, hooks=hooks))
+    assert dt >= 0.3 and len(_events(docs, "primary")) == 1

@@ -17,6 +17,11 @@ Marana frame. Per target it:
 6. publishes ``adaptive.measured``; just before that it drops any queued copies of
    the batch it has just measured (see ``_drop_resent``).
 
+The run closes when tsuchinoko's experiment ends (see ``_EndWatch``: a
+``tsuchinoko.experiment.stop`` request on the bus, or ``tsuchinoko.status``
+reporting ``Inactive``/``Stopping``/``Exiting``), when Lightfall's Stop is pressed, or,
+as a fallback, after ``timeout`` s without new targets.
+
 This module imports nothing from Lightfall at import time (the rixs-live venv
 imports the plugin without Lightfall); ``lightfall_hooks()`` reaches Lightfall's
 NATS bridge, credentials and adaptive-plan state lazily.
@@ -43,6 +48,11 @@ SCORE_FIELD = "rixs_score"
 FWHM_FIELD = "rixs_fwhm_px"
 TARGETS_SUBJECT = "tsuchinoko.targets"
 BIND_SUBJECT = "tsuchinoko.experiment.bind_run"
+STOP_SUBJECT = "tsuchinoko.experiment.stop"
+STATUS_SUBJECT = "tsuchinoko.status"
+# tsuchinoko CoreState names (tsuchinoko.core.CoreState)
+ACTIVE_STATES = frozenset({"Starting", "Running", "Pausing", "Paused", "Resuming"})
+ENDED_STATES = frozenset({"Inactive", "Stopping", "Exiting"})
 MAX_CONSECUTIVE_TIMEOUTS = 3
 # rixs_score = SCORE_SCALE / FWHM px. tsuchinoko's TiledReader tells gpCAM every
 # measurement with variance 1.0 (fixed; a noise_function cannot override it), so the
@@ -65,6 +75,8 @@ class OptimizeHooks:
     ``prefix()``: Lightfall's NATS topic prefix.
     ``state``: object with ``stop_requested``/``pause_requested`` flags (and,
     optionally, Qt signals ``status_changed``/``iteration_changed``/``targets_received``).
+    ``status()`` (optional): tsuchinoko's ``tsuchinoko.status`` reply (``{"state": ...}``)
+    or None when it does not answer.
     """
 
     bridge: Any
@@ -72,6 +84,7 @@ class OptimizeHooks:
     credentials: Callable[[], tuple[str, str | None, str | None]]
     prefix: Callable[[], str]
     state: Any
+    status: Callable[[], dict | None] | None = None
 
 
 def lightfall_hooks() -> OptimizeHooks:
@@ -102,6 +115,7 @@ def lightfall_hooks() -> OptimizeHooks:
         credentials=adaptive._get_tiled_credentials,
         prefix=adaptive._get_lightfall_prefix,
         state=adaptive._state,
+        status=lambda: ipc.request(STATUS_SUBJECT, {}, timeout_ms=1000),
     )
 
 
@@ -147,6 +161,52 @@ def _drop_resent(bridge, targets: list, pending: deque) -> int:
     return dropped
 
 
+class _EndWatch:
+    """Notices tsuchinoko's experiment ending, so the run need not wait for ``timeout``.
+
+    tsuchinoko publishes no state events, so: (1) the plan subscribes to
+    ``tsuchinoko.experiment.stop`` and sees every stop request (the agent's
+    ``tsuchinoko_stop``, tsuchinoko's own UI client) as it is sent; (2) while waiting
+    for targets it asks ``tsuchinoko.status`` every ``interval`` s and ends on
+    Inactive/Stopping/Exiting, e.g. after a stop it missed or an internal stop_at.
+    An ended state only counts once the experiment was seen active (a status in
+    ACTIVE_STATES or a target received), so a slow start after bind_run is not
+    mistaken for the end. No reply (tsuchinoko gone) never ends it: ``timeout`` does.
+    """
+
+    def __init__(self, bridge, status: Callable[[], dict | None] | None, interval: float):
+        self.bridge, self.status, self.interval = bridge, status, interval
+        self.seen_active = False
+        self.reason: str | None = None
+        self._next = time.monotonic() + interval
+        bridge.subscribe(STOP_SUBJECT)
+
+    def check_stop(self) -> bool:
+        if self.reason is None and self.bridge.try_get(STOP_SUBJECT) is not None:
+            self.reason = "tsuchinoko was stopped"
+        return self.reason is not None
+
+    def poll(self) -> bool:
+        """``check_stop`` plus, at most every ``interval`` s, a status request."""
+        if self.check_stop() or self.status is None:
+            return self.reason is not None
+        now = time.monotonic()
+        if now < self._next:
+            return False
+        self._next = now + self.interval
+        try:
+            reply = self.status()
+        except Exception as ex:  # noqa: BLE001 - treat like no reply
+            logger.debug(f"qerlin_optimize: tsuchinoko.status failed: {ex!r}")
+            reply = None
+        st = (reply or {}).get("state")
+        if st in ACTIVE_STATES:
+            self.seen_active = True
+        elif st in ENDED_STATES and self.seen_active:
+            self.reason = f"tsuchinoko is {st}"
+        return self.reason is not None
+
+
 def _emit(state, signal: str, *args) -> None:
     sig = getattr(state, signal, None)
     if sig is not None:
@@ -158,14 +218,17 @@ def _emit(state, signal: str, *args) -> None:
 
 def qerlin_optimize(marana, motors, mono=None, exposure_s: float = 1.0,
                     timeout: float = 300.0, score_timeout: float = 60.0, *,
-                    score_scale: float = SCORE_SCALE, poll_interval: float = 0.1, hooks: OptimizeHooks | None = None,
+                    score_scale: float = SCORE_SCALE, status_interval: float = 5.0,
+                    poll_interval: float = 0.1, hooks: OptimizeHooks | None = None,
                     md: dict | None = None):
     """Measure the targets tsuchinoko/gpCAM sends; score each Marana frame via rixs-live.
 
     ``motors`` (N >= 1) are moved to each target in order (target i is in the axes
     order of tsuchinoko's ``parameter_bounds``). ``mono`` (optional) only labels
-    the run's mono energy for resolving power. ``timeout`` is how long to wait for
-    new targets before closing the run; ``score_timeout`` how long to wait for each
+    the run's mono energy for resolving power. The run closes once tsuchinoko's
+    experiment ends (stop request seen, or its status Inactive, polled every
+    ``status_interval`` s); ``timeout`` is the fallback: how long to wait for
+    new targets before closing the run anyway; ``score_timeout`` how long to wait for each
     frame's score. A frame not scored in time records ``rixs_score`` 0; after
     ``MAX_CONSECUTIVE_TIMEOUTS`` in a row the plan fails with ScoreTimeoutError.
     """
@@ -202,6 +265,7 @@ def qerlin_optimize(marana, motors, mono=None, exposure_s: float = 1.0,
     _md.update(md or {})
 
     bridge.subscribe(TARGETS_SUBJECT)
+    end = _EndWatch(bridge, hooks.status, status_interval)
     try:
         run_uid = yield from bps.open_run(md=_md)
         tiled_url, tiled_api_key, proxy_url = hooks.credentials()
@@ -224,14 +288,19 @@ def qerlin_optimize(marana, motors, mono=None, exposure_s: float = 1.0,
         while not state.stop_requested:
             while state.pause_requested and not state.stop_requested:
                 yield from bps.sleep(poll_interval)
+            if end.check_stop():
+                break
             msg = pending.popleft() if pending else bridge.try_get(TARGETS_SUBJECT)
             if msg is None:
+                if end.poll():
+                    break
                 if time.monotonic() > deadline:
                     _emit(state, "status_changed", "Timeout waiting for targets")
                     logger.info("qerlin_optimize: no new targets; closing the run")
                     break
                 yield from bps.sleep(poll_interval)
                 continue
+            end.seen_active = True
             targets = msg.get("targets", [])
             iteration = msg.get("iteration", iteration + 1)
             if hasattr(state, "current_iteration"):
@@ -240,7 +309,7 @@ def qerlin_optimize(marana, motors, mono=None, exposure_s: float = 1.0,
             _emit(state, "targets_received", len(targets))
 
             for i, target in enumerate(targets):
-                if state.stop_requested:
+                if state.stop_requested or end.check_stop():
                     break
                 target = list(target)
                 if len(target) != len(motors):
@@ -287,6 +356,9 @@ def qerlin_optimize(marana, motors, mono=None, exposure_s: float = 1.0,
                     raise ScoreTimeoutError(text)
             deadline = time.monotonic() + timeout
 
+        if end.reason:
+            _emit(state, "status_changed", f"Experiment ended ({end.reason})")
+            logger.info(f"qerlin_optimize: {end.reason}; closing the run")
         yield from bps.close_run()
     finally:
         bridge.cleanup()
