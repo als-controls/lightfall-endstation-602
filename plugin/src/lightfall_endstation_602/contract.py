@@ -22,6 +22,15 @@ SUBJ_DISCOVER = "_rixs.discover"
 # block-downsampled by ``scale`` (full-res coord / scale = preview coord).
 # The start doc's optional ``motor_units`` (added within v2; older senders omit it,
 # read as "") is echoed as ``motor_units`` in frame and complete payloads.
+# Also optional within v2 (older senders omit them):
+# - ``image_stream`` (default "primary"): the event stream holding the image and
+#   motor rows (``qerlin_optimize`` uses "frames"; seq_num counts within it).
+# - ``motor_fields`` (default [motor_field]): every motor of an N-D run, first ==
+#   ``motor_field``. Frame payloads always carry ``positions: {field: value}``
+#   (``position`` stays the first motor). A run with more than one motor gets no
+#   1D fit (``fit.ok`` false, reason "multi-motor run: no 1D fit"); its complete
+#   payload's points carry ``positions`` and ``best_measured`` is the lowest-FWHM
+#   (highest-score) point with all its positions.
 
 
 def build_rixs_md(
@@ -30,13 +39,17 @@ def build_rixs_md(
     frame_shape: tuple[int, int],
     mono_energy_ev: float | None,
     motor_units: str = "",
+    image_stream: str | None = None,
+    motor_fields: list[str] | None = None,
 ) -> dict:
     """Build the ``rixs`` start-document metadata block.
 
     ``motor_units`` (optional, "" if unknown) labels ``motor_field``: SM3 pitch in its
-    native units, Sample X in mm.
+    native units, Sample X in mm. ``image_stream`` and ``motor_fields`` are written
+    only when given (an N-D optimization run); ``motor_fields[0]`` must be
+    ``motor_field``.
     """
-    return {
+    md = {
         "contract_version": CONTRACT_VERSION,
         "kind": KIND_ZEROTH,
         "image_field": image_field,
@@ -45,3 +58,11 @@ def build_rixs_md(
         "mono_energy_ev": mono_energy_ev,
         "motor_units": motor_units or "",
     }
+    if image_stream:
+        md["image_stream"] = image_stream
+    if motor_fields:
+        fields = [str(f) for f in motor_fields]
+        if fields[0] != motor_field:
+            raise ValueError(f"motor_fields[0] {fields[0]!r} != motor_field {motor_field!r}")
+        md["motor_fields"] = fields
+    return md

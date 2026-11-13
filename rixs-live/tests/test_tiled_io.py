@@ -171,3 +171,38 @@ def test_reader_without_seq_num_column_is_positional(tiled_client):
     run = _write_manual(tiled_client, frames, [0.3, 0.2, 0.1])
     got = FocusRunReader(run, _info(shape=(4, 5))).read_new(0)
     assert [(s, round(p, 1)) for s, p, _ in got] == [(1, 0.3), (2, 0.2), (3, 0.1)]
+
+
+def test_reader_reads_nd_run_from_named_stream(tiled_client):
+    """A qerlin_optimize-shaped run: images + 2 motors in "frames", scalars in primary."""
+    import bluesky.plan_stubs as bps
+    from lightfall_endstation_602.sim.devices import SimSampleX
+
+    tw = TiledWriter(tiled_client, batch_size=1)
+    RE = RunEngine({})
+    RE.subscribe(tw)
+    sm3 = SimSM3Pitch(name="sm3_pitch")
+    sx = SimSampleX(name="sample_x")
+    marana = SimMarana(name="marana", frame_shape=SHAPE)
+    md = {"rixs": build_rixs_md("marana_image", "sm3_pitch", SHAPE, 850.0,
+                                image_stream="frames", motor_fields=["sm3_pitch", "sample_x"])}
+    targets = [(103.0, -0.9), (104.0, -0.8), (105.0, -0.7)]
+
+    def plan():
+        yield from bps.open_run(md=md)
+        for p, x in targets:
+            yield from bps.mv(sm3, p, sx, x)
+            yield from bps.trigger_and_read([marana, sm3, sx], name="frames")
+            yield from bps.trigger_and_read([sm3, sx], name="primary")
+        yield from bps.close_run()
+
+    (uid,) = RE(plan())
+    run = tiled_client[uid]
+    info = RixsRunInfo(uid, "marana_image", "sm3_pitch", SHAPE, 850.0, "", "frames",
+                       ("sm3_pitch", "sample_x"))
+    got = FocusRunReader(run, info).read_new_rows(0)
+    assert [g[0] for g in got] == [1, 2, 3]
+    assert [g[1] for g in got] == [{"sm3_pitch": pytest.approx(p), "sample_x": pytest.approx(x)}
+                                   for p, x in targets]
+    assert got[0][2].shape == SHAPE
+    assert [g[1] for g in FocusRunReader(run, info).read_new(1)] == [104.0, 105.0]

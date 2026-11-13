@@ -104,7 +104,7 @@ def _connect_via_proxy(from_uri, url: str, api_key: str | None, proxy: str):
 
 
 class FocusRunReader:
-    """Slices only the rows not yet seen from the run's primary stream."""
+    """Slices only the rows not yet seen from the run's image stream (default primary)."""
 
     def __init__(self, run_node, info: RixsRunInfo) -> None:
         self._run = run_node
@@ -136,43 +136,55 @@ class FocusRunReader:
     def read_new(self, start: int) -> list[tuple[int, float, np.ndarray]]:
         """Return ``(seq_num, position, frame)`` for frames ``start..``.
 
-        Raises KeyError until the primary stream and its image node exist.
+        ``position`` is the first motor (``motor_field``); see ``read_new_rows``.
+        """
+        first = self._info.fields[0]
+        return [(sq, pos[first], frame) for sq, pos, frame in self.read_new_rows(start)]
+
+    def read_new_rows(self, start: int) -> list[tuple[int, dict[str, float], np.ndarray]]:
+        """Return ``(seq_num, {motor field: position}, frame)`` for frames ``start..``.
+
+        Reads the run's ``info.image_stream`` (default ``primary``) and every motor
+        in ``info.fields``. Raises KeyError until that stream and its image node exist.
 
         The image array is stored in acquisition order (row i is the frame with
-        ``seq_num == i + 1``), but the table columns (``seq_num``, the motor) can
+        ``seq_num == i + 1``), but the table columns (``seq_num``, the motors) can
         come back in physical storage order (PostgreSQL), each row self-consistent.
-        So the position of frame i is looked up by ``seq_num`` rather than by
+        So the positions of frame i are looked up by ``seq_num`` rather than by
         index. Frames whose seq_num is not in the table yet are not returned
         (the caller polls again from the count it has consumed); the first such
         gap ends the batch. Without a ``seq_num`` column rows are paired by
         position, limited to rows present in both image and motor nodes.
         """
-        stream = self._run["primary"]
+        stream = self._run[self._info.image_stream]
         image = stream[self._info.image_field]
-        motor = stream[self._info.motor_field]
+        fields = self._info.fields
+        motors = [stream[f] for f in fields]
         n_img = self._n_frames(image)
         try:
             seq_node = stream["seq_num"]
         except KeyError:
             seq_node = None
+        n_mot = min(int(m.shape[0]) for m in motors)
         if seq_node is None:
-            n = min(n_img, int(motor.shape[0]))
+            n = min(n_img, n_mot)
             if n <= start:
                 return []
             frames = self._frames(image, start, n)
-            positions = np.asarray(motor[start:n], dtype=float).ravel()
-            return [(start + i + 1, float(positions[i]), frames[i])
+            cols = [np.asarray(m[start:n], dtype=float).ravel() for m in motors]
+            return [(start + i + 1, {f: float(c[i]) for f, c in zip(fields, cols)}, frames[i])
                     for i in range(n - start)]
 
         # Bounded slices (not [:]): a full read of a column that is still growing
         # trips the server's expected_shape check (HTTP 500) in the queued-writer case.
-        m = min(int(seq_node.shape[0]), int(motor.shape[0]))
+        m = min(int(seq_node.shape[0]), n_mot)
         if m == 0:
             return []
         seqs = np.asarray(seq_node[0:m]).ravel()
-        positions = np.asarray(motor[0:m], dtype=float).ravel()
+        cols = [np.asarray(mo[0:m], dtype=float).ravel() for mo in motors]
+        n_rows = min([len(seqs)] + [len(c) for c in cols])
         pos_of: dict[int, int] = {}
-        for idx, sq in enumerate(seqs[: len(positions)]):
+        for idx, sq in enumerate(seqs[:n_rows]):
             sq = int(sq)
             if sq in pos_of:
                 self._warn_once(("dup", sq), f"duplicate seq_num {sq} in table; keeping first")
@@ -184,7 +196,8 @@ class FocusRunReader:
         if stop <= start:
             return []
         frames = self._frames(image, start, stop)
-        return [(i + 1, float(positions[pos_of[i + 1]]), frames[i - start])
+        return [(i + 1, {f: float(c[pos_of[i + 1]]) for f, c in zip(fields, cols)},
+                 frames[i - start])
                 for i in range(start, stop)]
 
     def _warn_once(self, key, msg: str) -> None:

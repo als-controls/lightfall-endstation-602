@@ -20,8 +20,9 @@ from rixs_live.contract import (
 from rixs_live.focus import FrameScore
 from rixs_live.service import RixsLiveService
 
-FRAME_KEYS = {"run_uid", "seq_num", "motor_field", "motor_units", "position", "fwhm_px", "fwhm_mev", "resolving_power",
-              "score_valid", "failure_reason", "centroid", "angle_deg", "preview"}
+FRAME_KEYS = {"run_uid", "seq_num", "motor_field", "motor_units", "position", "positions",
+              "fwhm_px", "fwhm_mev", "resolving_power", "score_valid", "failure_reason",
+              "centroid", "angle_deg", "preview"}
 
 
 class FakeNats:
@@ -55,16 +56,18 @@ class Msg:
 class FakeStream:
     """A primary stream whose rows become visible as the test reveals them."""
 
-    def __init__(self, frames, positions, table_order=None, motor="sm3_pitch"):
+    def __init__(self, frames, positions, table_order=None, motor="sm3_pitch", extra=None):
         self._cols = {
             "marana_image": np.asarray(frames, dtype=float),
             motor: np.asarray(positions, dtype=float),
             f"{motor}_setpoint": np.asarray(positions, dtype=float) + 99.0,  # decoy
             "seq_num": np.arange(1, len(positions) + 1),
         }
+        for name, values in (extra or {}).items():  # further motors of an N-D run
+            self._cols[name] = np.asarray(values, dtype=float)
         if table_order is not None:  # table columns in scrambled storage order
             idx = np.asarray(table_order) - 1
-            for k in (motor, f"{motor}_setpoint", "seq_num"):
+            for k in [motor, f"{motor}_setpoint", "seq_num", *(extra or {})]:
                 self._cols[k] = self._cols[k][idx]
         self.visible = 0
 
@@ -79,12 +82,13 @@ class FakeStream:
 
 
 class FakeRun:
-    def __init__(self, start, stream=None):
+    def __init__(self, start, stream=None, stream_name="primary"):
         self.metadata = {"start": start}
         self.stream = stream
+        self.stream_name = stream_name
 
     def __getitem__(self, key):
-        if key != "primary" or self.stream is None or self.stream.visible == 0:
+        if key != self.stream_name or self.stream is None or self.stream.visible == 0:
             raise KeyError(key)
         return self.stream
 
@@ -105,13 +109,14 @@ def _rixs_md(shape, **over):
     return md
 
 
-def _add_run(tiled, uid, frames, positions, table_order=None, **md_over):
+def _add_run(tiled, uid, frames, positions, table_order=None, extra=None, **md_over):
     shape = np.asarray(frames).shape[1:]
     start = {"uid": uid, "plan_name": "scan", "num_points": len(positions),
              "rixs": _rixs_md(shape, **md_over)}
     stream = FakeStream(frames, positions, table_order,
-                        motor=start["rixs"]["motor_field"])
-    tiled.runs[uid] = FakeRun(start, stream)
+                        motor=start["rixs"]["motor_field"], extra=extra)
+    tiled.runs[uid] = FakeRun(start, stream,
+                              stream_name=start["rixs"].get("image_stream", "primary"))
     return stream
 
 
@@ -384,7 +389,7 @@ async def test_poll_error_publishes_error_and_unbinds(stub_score):
     def boom(start):
         raise RuntimeError("tiled connection dropped")
 
-    svc._current["reader"].read_new = boom
+    svc._current["reader"].read_new_rows = boom
     await _until(lambda: fake.on(SUBJ_ERROR))
     assert "tiled connection dropped" in fake.on(SUBJ_ERROR)[-1]["error"]
     await _until(lambda: not svc.busy)
@@ -745,3 +750,114 @@ async def test_scrambled_table_rows_give_correct_optimal_position(stub_score):
     (done,) = fake.on(SUBJ_COMPLETE)
     assert done["fit"]["ok"], done["fit"]
     assert abs(done["fit"]["optimal_position"] - 0.2) < 0.05
+
+
+# ------------------------------------------------------------------ N-D runs
+
+
+async def test_single_motor_frames_carry_positions(stub_score):
+    positions = [0.0, 0.5, 1.0]
+    fake, tiled = FakeNats(), FakeTiled()
+    stream = _add_run(tiled, "run1", _parabola_frames(positions), positions)
+    stream.visible = 3
+    svc = _service(fake, tiled)
+    await svc._handle_bind(_bind("run1"), None)
+    await svc._handle_stop({"run_uid": "run1"}, None)
+    assert [f["positions"] for f in fake.on(SUBJ_FRAME)] == [
+        {"sm3_pitch": p} for p in positions]
+    (done,) = fake.on(SUBJ_COMPLETE)
+    assert "motor_fields" not in done and "positions" not in done["points"][0]
+
+
+async def test_image_stream_is_read_instead_of_primary(stub_score):
+    """A start doc naming image_stream="frames" reads that stream, not primary."""
+    positions = [-0.8, -0.4, 0.0, 0.4, 0.8]
+    fake, tiled = FakeNats(), FakeTiled()
+    stream = _add_run(tiled, "runF", _parabola_frames(positions), positions,
+                      image_stream="frames")
+    stream.visible = 5
+    svc = _service(fake, tiled)
+    await svc._handle_bind(_bind("runF"), None)
+    assert svc._current["info"].image_stream == "frames"
+    await svc._handle_stop({"run_uid": "runF", "num_events": {"frames": 5, "primary": 5}},
+                           None)
+    assert [m["seq_num"] for m in fake.on(SUBJ_FRAME)] == [1, 2, 3, 4, 5]
+    (done,) = fake.on(SUBJ_COMPLETE)
+    assert done["fit"]["ok"]  # one motor: still fitted
+    assert not fake.on(SUBJ_ERROR)
+
+
+async def test_image_stream_ignores_rows_in_primary(stub_score):
+    """Only the named stream holds frames: rows in primary are not read."""
+    fake, tiled = FakeNats(), FakeTiled()
+    stream = _add_run(tiled, "runG", _parabola_frames([0.0, 1.0]), [0.0, 1.0],
+                      image_stream="frames")
+    stream.visible = 2
+    tiled.runs["runG"].stream_name = "primary"  # rows exist, but not in "frames"
+    svc = _service(fake, tiled, drain_settle_s=0.05)
+    await svc._handle_bind(_bind("runG"), None)
+    await svc._handle_stop({"run_uid": "runG", "exit_status": "abort"}, None)
+    assert not fake.on(SUBJ_FRAME)
+    (done,) = fake.on(SUBJ_COMPLETE)
+    assert done["points"] == [] and done["best_measured"] is None
+
+
+async def test_image_stream_num_events_sets_expected_total(stub_score):
+    """num_events of the image stream (not primary) is the frame count to wait for."""
+    positions = [0.0, 0.5, 1.0]
+    fake, tiled = FakeNats(), FakeTiled()
+    stream = _add_run(tiled, "runE", _parabola_frames(positions), positions,
+                      image_stream="frames")
+    stream.visible = 3
+    svc = _service(fake, tiled)
+    await svc._handle_bind(_bind("runE"), None)
+    cur = svc._current
+    assert svc._expected_frames(cur, {"num_events": {"frames": 3, "primary": 7}}) == 3
+
+
+@pytest.mark.parametrize("n_motors", [2, 3])
+async def test_multi_motor_run_complete_payload(stub_score, n_motors):
+    """N-D run: positions for every motor, no 1D fit, best = max-score point."""
+    fields = ["sm3_pitch", "sample_x", "aux"][:n_motors]
+    pitch = [100.0, 104.0, 108.0, 102.0, 106.0]
+    sx = [-0.9, -0.8, -0.7, -0.85, -0.75]
+    aux = [1.0, 2.0, 3.0, 4.0, 5.0]
+    widths = [9.0, 4.0, 12.0, 6.0, 7.0]  # best (lowest FWHM) is point 2
+    frames = [np.full((8, 8), w) for w in widths]
+    extra = {k: v for k, v in {"sample_x": sx, "aux": aux}.items() if k in fields}
+    fake, tiled = FakeNats(), FakeTiled()
+    stream = _add_run(tiled, "runN", frames, pitch, table_order=[3, 1, 5, 2, 4],
+                      extra=extra, image_stream="frames", motor_fields=fields)
+    stream.visible = 5
+    svc = _service(fake, tiled)
+    await svc._handle_bind(_bind("runN"), None)
+    await svc._handle_stop({"run_uid": "runN"}, None)
+    cols = {"sm3_pitch": pitch, "sample_x": sx, "aux": aux}
+    msgs = fake.on(SUBJ_FRAME)
+    assert [m["seq_num"] for m in msgs] == [1, 2, 3, 4, 5]
+    for i, m in enumerate(msgs):  # scrambled table: still aligned by seq_num
+        assert m["positions"] == {f: pytest.approx(cols[f][i]) for f in fields}
+        assert m["position"] == pytest.approx(pitch[i])
+        assert m["fwhm_px"] == pytest.approx(widths[i])
+    (done,) = fake.on(SUBJ_COMPLETE)
+    assert done["motor_fields"] == fields
+    assert done["fit"] == {"ok": False, "optimal_position": None, "coeffs": None,
+                           "reason": "multi-motor run: no 1D fit"}
+    assert set(done["points"][0]) == {"position", "positions", "fwhm_px", "fwhm_mev",
+                                      "resolving_power", "score_valid"}
+    assert done["best_measured"] == {
+        "position": pytest.approx(104.0), "fwhm_px": pytest.approx(4.0),
+        "positions": {f: pytest.approx(cols[f][1]) for f in fields}}
+    assert svc.results["runN"] == done and not fake.on(SUBJ_ERROR)
+
+
+async def test_multi_motor_missing_column_holds_frames(stub_score):
+    """A motor column that is not there yet holds the frames back (KeyError -> retry)."""
+    fake, tiled = FakeNats(), FakeTiled()
+    stream = _add_run(tiled, "runM", _parabola_frames([0.0, 1.0]), [0.0, 1.0],
+                      motor_fields=["sm3_pitch", "sample_x"])
+    stream.visible = 2
+    svc = _service(fake, tiled, drain_settle_s=0.05)
+    await svc._handle_bind(_bind("runM"), None)
+    await svc._handle_stop({"run_uid": "runM", "exit_status": "abort"}, None)
+    assert not fake.on(SUBJ_FRAME) and not fake.on(SUBJ_ERROR)

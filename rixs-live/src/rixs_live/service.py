@@ -26,6 +26,7 @@ from rixs_live.tiled_io import FocusRunReader, connect_tiled, env_proxy, redact_
 EVENTS = [SUBJ_STATUS, SUBJ_ERROR, SUBJ_FRAME, SUBJ_COMPLETE]
 ACTIONS = [SUBJ_RESULT]
 POINT_KEYS = ("position", "fwhm_px", "fwhm_mev", "resolving_power", "score_valid")
+MULTI_MOTOR_NO_FIT = "multi-motor run: no 1D fit"
 
 
 class RixsLiveService:
@@ -214,7 +215,8 @@ class RixsLiveService:
             }
             self._poll_task = loop.create_task(self._poll_run(self._current))
             await self._status(self._current, "binding")
-            logger.info(f"bound run {run_uid} ({info.image_field} vs {info.motor_field})")
+            logger.info(f"bound run {run_uid} ({info.image_stream}.{info.image_field} vs "
+                        f"{', '.join(info.fields)})")
         except Exception as ex:
             logger.exception(f"bind failed for {run_uid}")
             await self._nats.publish(SUBJ_ERROR, {"run_uid": run_uid, "error": str(ex)})
@@ -238,15 +240,15 @@ class RixsLiveService:
     async def _score_new(self, cur: dict, *, drain: bool = False) -> int:
         """Score and publish every frame not yet seen; returns how many were new.
 
-        Raises KeyError while the primary stream does not exist yet. Stops early
+        Raises KeyError while the image stream does not exist yet. Stops early
         (between frames) once a stop/rebind is requested, except when draining.
         """
         loop = asyncio.get_running_loop()
         first = cur["next"]
-        rows = await loop.run_in_executor(None, cur["reader"].read_new, first)
+        rows = await loop.run_in_executor(None, cur["reader"].read_new_rows, first)
         info = cur["info"]
         disp = self._config.dispersion_mev_per_px
-        for seq_num, position, frame in rows:
+        for seq_num, positions, frame in rows:
             if cur["stop"].is_set() and not drain:
                 break  # stop/rebind requested: leave the rest to the drain (or drop it)
             score = await loop.run_in_executor(
@@ -254,7 +256,8 @@ class RixsLiveService:
             preview = await loop.run_in_executor(None, make_preview, frame)
             payload = {"run_uid": cur["run_uid"], "seq_num": seq_num,
                        "motor_field": info.motor_field, "motor_units": info.motor_units,
-                       "position": position, **score.to_dict(), "preview": preview}
+                       "position": positions[info.fields[0]], "positions": positions,
+                       **score.to_dict(), "preview": preview}
             cur["frames"].append(payload)
             cur["next"] += 1
             await self._nats.publish(SUBJ_FRAME, payload)
@@ -298,12 +301,13 @@ class RixsLiveService:
     def _expected_frames(cur: dict, stop: dict) -> int | None:
         """Frame count the drain should wait for, or None to wait for rows to settle.
 
-        Stop doc ``num_events.primary`` wins when present; else a non-success
+        Stop doc ``num_events[<image stream>]`` (``primary`` unless the start doc
+        names another ``image_stream``) wins when present; else a non-success
         ``exit_status`` (abort/fail) means the start doc's ``num_points`` will never
         be reached; else ``num_points``.
         """
         ne = stop.get("num_events")
-        primary = ne.get("primary") if isinstance(ne, dict) else None
+        primary = ne.get(cur["info"].image_stream) if isinstance(ne, dict) else None
         if isinstance(primary, int) and not isinstance(primary, bool) and primary >= 0:
             return primary
         status = stop.get("exit_status")
@@ -316,7 +320,7 @@ class RixsLiveService:
         """Score the frames the poll loop has not seen, including late ones.
 
         With an asynchronous writer the last events may land after the stop. Keep
-        re-polling until the expected frame count (stop doc ``num_events.primary``,
+        re-polling until the expected frame count (stop doc ``num_events`` of the image stream,
         else start doc ``num_points`` for a successful run) has been read, else
         (unknown count, or an aborted/failed run) until no new rows appeared for
         ``drain_settle_s``. The cap,
@@ -353,19 +357,36 @@ class RixsLiveService:
 
     def _complete_payload(self, cur: dict) -> dict:
         frames = cur["frames"]
-        points = [{k: f[k] for k in POINT_KEYS} for f in frames]
+        info = cur["info"]
+        multi = info.multi_motor
+        keys = POINT_KEYS + ("positions",) if multi else POINT_KEYS
+        points = [{k: f[k] for k in keys} for f in frames]
         valid = [p for p in points if p["score_valid"] and p["fwhm_px"] is not None]
-        fit = fit_focus_curve([p["position"] for p in valid], [p["fwhm_px"] for p in valid])
+        if multi:
+            # An N-D run (gpCAM optimization) has no single axis to fit along.
+            fit = {"ok": False, "optimal_position": None, "coeffs": None,
+                   "reason": MULTI_MOTOR_NO_FIT}
+        else:
+            fit = fit_focus_curve([p["position"] for p in valid],
+                                  [p["fwhm_px"] for p in valid])
+        # Lowest FWHM == highest score (1/FWHM).
         best = min(valid, key=lambda p: p["fwhm_px"]) if valid else None
-        return {
+        best_measured = None
+        if best:
+            best_measured = {"position": best["position"], "fwhm_px": best["fwhm_px"]}
+            if multi:
+                best_measured["positions"] = dict(best["positions"])
+        payload = {
             "run_uid": cur["run_uid"],
-            "motor_field": cur["info"].motor_field,
-            "motor_units": cur["info"].motor_units,
+            "motor_field": info.motor_field,
+            "motor_units": info.motor_units,
             "points": points,
             "fit": fit,
-            "best_measured": ({"position": best["position"], "fwhm_px": best["fwhm_px"]}
-                              if best else None),
+            "best_measured": best_measured,
         }
+        if multi:
+            payload["motor_fields"] = list(info.fields)
+        return payload
 
     def _store(self, run_uid: str, payload: dict) -> None:
         self.results[run_uid] = payload

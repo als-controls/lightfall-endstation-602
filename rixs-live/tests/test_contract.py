@@ -61,3 +61,38 @@ def test_subjects_match_plugin():
     assert contract.CONTRACT_VERSION == 2
     for n in names:
         assert getattr(contract, n) == getattr(plugin_contract, n), n
+
+
+def test_parse_image_stream_and_motor_fields_optional():
+    info = parse_start_rixs("u1", _doc())
+    assert (info.image_stream, info.motor_fields) == ("primary", ())
+    assert info.fields == ("sm3_pitch",) and not info.multi_motor
+    info = parse_start_rixs("u1", _doc(image_stream="frames",
+                                       motor_fields=["sm3_pitch", "sample_x", "aux"]))
+    assert info.image_stream == "frames"
+    assert info.fields == ("sm3_pitch", "sample_x", "aux") and info.multi_motor
+    one = parse_start_rixs("u1", _doc(motor_fields=["sm3_pitch"]))
+    assert one.fields == ("sm3_pitch",) and not one.multi_motor
+
+
+@pytest.mark.parametrize("over", [
+    {"image_stream": ""}, {"image_stream": 5}, {"motor_fields": []},
+    {"motor_fields": "sm3_pitch"}, {"motor_fields": ["sample_x", "sm3_pitch"]},
+    {"motor_fields": ["sm3_pitch", "sm3_pitch"]}, {"motor_fields": ["sm3_pitch", 3]},
+])
+def test_parse_bad_nd_fields_raise(over):
+    with pytest.raises(ValueError):
+        parse_start_rixs("u1", _doc(**over))
+
+
+def test_plugin_nd_md_round_trips():
+    md = plugin_contract.build_rixs_md(
+        "marana_image", "sm3_pitch", (2048, 2048), None, image_stream="frames",
+        motor_fields=["sm3_pitch", "sample_x"])
+    assert md["image_stream"] == "frames" and md["motor_fields"] == ["sm3_pitch", "sample_x"]
+    info = parse_start_rixs("u1", {"rixs": md})
+    assert info == RixsRunInfo("u1", "marana_image", "sm3_pitch", (2048, 2048), None, "",
+                               "frames", ("sm3_pitch", "sample_x"))
+    with pytest.raises(ValueError):
+        plugin_contract.build_rixs_md("marana_image", "sm3_pitch", (8, 8), None,
+                                      motor_fields=["sample_x"])

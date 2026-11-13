@@ -26,6 +26,15 @@ SUBJ_DISCOVER = "_rixs.discover"
 # block-downsampled by ``scale`` (full-res coord / scale = preview coord).
 # The start doc's optional ``motor_units`` (added within v2; older senders omit it,
 # read as "") is echoed as ``motor_units`` in frame and complete payloads.
+# Also optional within v2 (older senders omit them):
+# - ``image_stream`` (default "primary"): the event stream holding the image and
+#   motor rows (``qerlin_optimize`` uses "frames"; seq_num counts within it).
+# - ``motor_fields`` (default [motor_field]): every motor of an N-D run, first ==
+#   ``motor_field``. Frame payloads always carry ``positions: {field: value}``
+#   (``position`` stays the first motor). A run with more than one motor gets no
+#   1D fit (``fit.ok`` false, reason "multi-motor run: no 1D fit"); its complete
+#   payload's points carry ``positions`` and ``best_measured`` is the lowest-FWHM
+#   (highest-score) point with all its positions.
 
 
 @dataclass(frozen=True)
@@ -36,6 +45,17 @@ class RixsRunInfo:
     frame_shape: tuple[int, int]
     mono_energy_ev: float | None
     motor_units: str = ""  # SM3 pitch in its native units, Sample X in mm; "" if unknown
+    image_stream: str = "primary"  # event stream with the image + motor rows
+    motor_fields: tuple[str, ...] = ()  # () = just motor_field (a 1D run)
+
+    @property
+    def fields(self) -> tuple[str, ...]:
+        """Every motor field of the run, ``motor_field`` first."""
+        return self.motor_fields or (self.motor_field,)
+
+    @property
+    def multi_motor(self) -> bool:
+        return len(self.fields) > 1
 
 
 def parse_start_rixs(run_uid: str, start_doc: dict) -> RixsRunInfo | None:
@@ -60,5 +80,25 @@ def parse_start_rixs(run_uid: str, start_doc: dict) -> RixsRunInfo | None:
     except (TypeError, ValueError, KeyError) as exc:
         raise ValueError(f"malformed rixs metadata: {exc!r}") from exc
     units = md.get("motor_units")
+    stream = md.get("image_stream")
+    if stream is None:
+        stream = "primary"
+    elif not isinstance(stream, str) or not stream:
+        raise ValueError(f"malformed rixs image_stream {stream!r}")
+    fields = md.get("motor_fields")
+    if fields is None:
+        fields = ()
+    elif (not isinstance(fields, (list, tuple)) or not fields
+          or not all(isinstance(f, str) and f for f in fields)):
+        raise ValueError(f"malformed rixs motor_fields {fields!r}")
+    else:
+        fields = tuple(fields)
+        if fields[0] != motor_field:
+            raise ValueError(f"rixs motor_fields[0] {fields[0]!r} != motor_field "
+                             f"{motor_field!r}")
+        if len(set(fields)) != len(fields):
+            raise ValueError(f"duplicate rixs motor_fields {list(fields)!r}")
+        if len(fields) == 1:
+            fields = ()  # same as a plain 1D run
     return RixsRunInfo(run_uid, image_field, motor_field, (h, w), md.get("mono_energy_ev"),
-                       units if isinstance(units, str) else "")
+                       units if isinstance(units, str) else "", stream, fields)
