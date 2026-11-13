@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import threading
 import time
+from collections import OrderedDict
 
 from loguru import logger
 from qtpy.QtCore import QObject, QTimer, Signal
@@ -22,6 +24,10 @@ class RixsServiceClient(QObject):
 
     HEALTH_INTERVAL_MS = 10_000
     HEALTH_TIMEOUT_MS = 2000
+    # Per-frame scores kept for plans that wait on them (qerlin_optimize), newest last.
+    SCORE_CACHE_MAX = 5000
+    SCORE_KEYS = ("run_uid", "seq_num", "position", "positions", "fwhm_px", "fwhm_mev",
+                  "resolving_power", "score_valid", "failure_reason")
 
     def __init__(self, ipc=None, parent=None) -> None:
         super().__init__(parent)
@@ -44,6 +50,11 @@ class RixsServiceClient(QObject):
         self._health_timer: QTimer | None = None
         self._health_pool = None
         self._health_inflight = False
+        # (run_uid, seq_num) -> compact frame score. Written on the Qt main thread by
+        # _on_frame, read from the RunEngine thread by qerlin_optimize: always under
+        # the condition's lock.
+        self._scores: OrderedDict[tuple[str, int], dict] = OrderedDict()
+        self._scores_cond = threading.Condition()
         if self._ipc is not None:
             self._ipc.subscribe(c.SUBJ_FRAME, self._on_frame)
             self._ipc.subscribe(c.SUBJ_COMPLETE, self._on_complete)
@@ -52,7 +63,61 @@ class RixsServiceClient(QObject):
 
     # IPCService marshals callbacks to the Qt main thread (main_thread=True default)
     def _on_frame(self, subject, data, reply):
+        self.record_score(data)
         self.frameScored.emit(data)
+
+    # -- per-frame score cache (thread-safe) ----------------------------------
+    def record_score(self, data: dict) -> None:
+        """Cache a rixs.zeroth.frame payload (without its preview) by (run_uid, seq_num)."""
+        if not isinstance(data, dict):
+            return
+        uid, seq = data.get("run_uid"), data.get("seq_num")
+        if not isinstance(uid, str) or not uid or isinstance(seq, bool):
+            return
+        try:
+            seq = int(seq)
+        except (TypeError, ValueError):
+            return
+        entry = {k: data[k] for k in self.SCORE_KEYS if k in data}
+        entry["seq_num"] = seq
+        with self._scores_cond:
+            self._scores[(uid, seq)] = entry
+            self._scores.move_to_end((uid, seq))
+            while len(self._scores) > self.SCORE_CACHE_MAX:
+                self._scores.popitem(last=False)
+            self._scores_cond.notify_all()
+
+    def get_score(self, run_uid: str, seq_num: int) -> dict | None:
+        """Non-blocking: the cached score of frame ``seq_num`` of ``run_uid``, else None."""
+        with self._scores_cond:
+            entry = self._scores.get((run_uid, int(seq_num)))
+            return dict(entry) if entry is not None else None
+
+    def wait_score(self, run_uid: str, seq_num: int, timeout_s: float) -> dict | None:
+        """Blocking: wait up to ``timeout_s`` for that frame's score; None on timeout.
+
+        For worker threads only: never call it on the RunEngine thread (plans poll
+        ``get_score`` between ``bps.sleep`` calls) or on the Qt main thread (where
+        the scores arrive).
+        """
+        key = (run_uid, int(seq_num))
+        deadline = time.monotonic() + max(float(timeout_s), 0.0)
+        with self._scores_cond:
+            while key not in self._scores:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                self._scores_cond.wait(remaining)
+            return dict(self._scores[key])
+
+    def clear_scores(self, run_uid: str | None = None) -> None:
+        """Forget the cached scores of ``run_uid`` (all runs when None)."""
+        with self._scores_cond:
+            if run_uid is None:
+                self._scores.clear()
+            else:
+                for key in [k for k in self._scores if k[0] == run_uid]:
+                    del self._scores[key]
 
     def _on_complete(self, subject, data, reply):
         self.last_complete = data

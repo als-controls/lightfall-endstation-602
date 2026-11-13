@@ -8,6 +8,7 @@ from lightfall_endstation_602.manifest import manifest
 EXPECTED = {
     ("device_backend", "qerlin_sim"): "lightfall_endstation_602.backend:QerlinSimBackendPlugin",
     ("plan", "qerlin_focus_scan"): "lightfall_endstation_602.plan_plugin:QerlinFocusScanPlanPlugin",
+    ("plan", "qerlin_optimize"): "lightfall_endstation_602.plan_plugin:QerlinOptimizePlanPlugin",
     ("panel", "qerlin_focus"): "lightfall_endstation_602.panel:QerlinFocusPanelPlugin",
     ("tool", "qerlin_focusing"): "lightfall_endstation_602.tools:QerlinFocusingTools",
 }
@@ -31,7 +32,7 @@ def test_no_heavy_imports():
     code = textwrap.dedent("""
         import sys
         import lightfall_endstation_602.manifest, lightfall_endstation_602.panel
-        import lightfall_endstation_602.tools
+        import lightfall_endstation_602.tools, lightfall_endstation_602.plan_plugin
         heavy = ["cv2", "scipy", "skimage", "pandas", "tifffile", "rixs_app"]
         bad = [m for m in heavy if m in sys.modules]
         print("HEAVY:", bad)

@@ -1,13 +1,15 @@
-"""Lightfall PlanPlugin exposing the QERLIN focus scan."""
+"""Lightfall PlanPlugins exposing the QERLIN focus scan and the N-D optimization."""
 # PEP 563 keeps Unit()/Range() metadata introspectable (see lightfall_pystxmcontrol).
 from __future__ import annotations
 
 from collections.abc import Callable, Generator
 from typing import Annotated, Any
 
+from lightfall.acquire.plan_ui import plan_with_ui
 from lightfall.plugins.plan_plugin import PlanPlugin
 from lightfall.ui.annotations import DeviceDefault, DeviceFilter, Range, Unit
 
+from .optimize import qerlin_optimize
 from .plans import qerlin_focus_scan
 from .sim.devices import SimMarana, SimMonoEnergy
 
@@ -62,3 +64,55 @@ class QerlinFocusScanPlanPlugin(PlanPlugin):
 
     def get_plan_function(self) -> Callable[..., Generator[Any, Any, Any]]:
         return _qerlin_focus_scan_ui
+
+
+def _adaptive_panel():
+    """Lightfall's adaptive-plan UI (stop/pause buttons sharing its plan state)."""
+    from lightfall.acquire.plans.adaptive import AdaptiveExperimentPanel
+    return AdaptiveExperimentPanel
+
+
+@plan_with_ui(_adaptive_panel())
+def _qerlin_optimize_ui(
+    marana: Annotated[Any, DeviceFilter(device_class=MARANA_CLASS)],
+    # Any motors, in the axes order of tsuchinoko's parameter_bounds.
+    motors: Annotated[list[Any], DeviceFilter(category="motor"),
+                      DeviceDefault("sm3_pitch", "sample_x")],
+    mono: Annotated[Any, DeviceFilter(device_class=MONO_CLASS),
+                    DeviceDefault("mono_energy")] = None,
+    *,
+    exposure_s: Annotated[float, Unit("s")] = 1.0,
+    timeout: Annotated[float, Unit("s")] = 300.0,
+    score_timeout: Annotated[float, Unit("s")] = 60.0,
+) -> Generator[Any, Any, Any]:
+    """N-D focus optimization: tsuchinoko/gpCAM picks points, rixs-live scores frames.
+
+    Start tsuchinoko and configure it (autonomous_experiment workflow) first; this
+    plan then measures the targets it sends. ``motors`` is a list of 1 or more
+    motor names (e.g. ["sm3_pitch", "sample_x"]) in the SAME order as the axes of
+    tsuchinoko's parameter_bounds. Each target takes one Marana frame (the
+    ``frames`` stream); rixs-live's FWHM of that frame becomes ``rixs_score`` =
+    1/FWHM px (0 when unscorable), which gpCAM maximizes, with ``rixs_fwhm_px``
+    alongside, in the ``primary`` stream. UNITS: exposure_s, timeout (wait for new
+    targets before closing the run) and score_timeout (wait for each frame's
+    score) are in SECONDS. The run fails after 3 frames in a row go unscored
+    (rixs-live down). ``mono`` (optional) labels the mono energy.
+    """
+    return (yield from qerlin_optimize(
+        marana, motors, mono, exposure_s=exposure_s, timeout=timeout,
+        score_timeout=score_timeout))
+
+
+class QerlinOptimizePlanPlugin(PlanPlugin):
+    """Contributes qerlin_optimize (gpCAM-driven N-D focusing) to the plan registry."""
+
+    @property
+    def name(self) -> str:
+        return "qerlin_optimize"
+
+    @property
+    def category(self) -> str:
+        return "rixs"
+
+    def get_plan_function(self) -> Callable[..., Generator[Any, Any, Any]]:
+        return _qerlin_optimize_ui

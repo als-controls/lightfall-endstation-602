@@ -1,0 +1,260 @@
+"""``qerlin_optimize``: N-D spectrometer focusing driven by tsuchinoko/gpCAM.
+
+The plan speaks tsuchinoko's adaptive handshake (the same one as Lightfall's
+``adaptive_experiment``: ``bind_run``, ``tsuchinoko.targets``,
+``{prefix}.adaptive.measured``), but its "detector" is rixs-live's score of each
+Marana frame. Per target it:
+
+1. moves the motors;
+2. reads ``[marana] + motors`` into the ``frames`` stream (rixs-live binds the run,
+   reads the images from that stream and scores each one);
+3. polls the client's score cache for that frame (same run uid, ``seq_num`` = the
+   point index), yielding ``bps.sleep`` between polls so the RunEngine stays live;
+4. sets ``rixs_score`` (1/FWHM px when valid, else 0, so gpCAM maximizes
+   sharpness) and ``rixs_fwhm_px`` (NaN when invalid);
+5. reads ``motors + [rixs_score, rixs_fwhm_px]`` into ``primary``, which
+   tsuchinoko's TiledReader reads;
+6. publishes ``adaptive.measured``.
+
+This module imports nothing from Lightfall at import time (the rixs-live venv
+imports the plugin without Lightfall); ``lightfall_hooks()`` reaches Lightfall's
+NATS bridge, credentials and adaptive-plan state lazily.
+"""
+from __future__ import annotations
+
+import math
+import time
+import uuid
+from dataclasses import dataclass
+from typing import Any, Callable
+
+import bluesky.plan_stubs as bps
+from loguru import logger
+from ophyd import Signal
+
+from .contract import MD_KEY, build_rixs_md
+from .plans import motor_units
+
+PLAN_NAME = "qerlin_optimize"
+IMAGE_STREAM = "frames"
+SCORE_FIELD = "rixs_score"
+FWHM_FIELD = "rixs_fwhm_px"
+TARGETS_SUBJECT = "tsuchinoko.targets"
+BIND_SUBJECT = "tsuchinoko.experiment.bind_run"
+MAX_CONSECUTIVE_TIMEOUTS = 3
+
+
+class ScoreTimeoutError(RuntimeError):
+    """rixs-live scored none of several consecutive frames (probably not running)."""
+
+
+@dataclass
+class OptimizeHooks:
+    """What the plan needs from its surroundings; tests pass fakes.
+
+    ``bridge``: ``subscribe/try_get/publish/cleanup`` (Lightfall's NATSPlanBridge).
+    ``client``: ``get_score(run_uid, seq_num) -> dict | None`` (RixsServiceClient).
+    ``credentials()``: ``(tiled_url, tiled_api_key, proxy_url)`` for tsuchinoko.
+    ``prefix()``: Lightfall's NATS topic prefix.
+    ``state``: object with ``stop_requested``/``pause_requested`` flags (and,
+    optionally, Qt signals ``status_changed``/``iteration_changed``/``targets_received``).
+    """
+
+    bridge: Any
+    client: Any
+    credentials: Callable[[], tuple[str, str | None, str | None]]
+    prefix: Callable[[], str]
+    state: Any
+
+
+def lightfall_hooks() -> OptimizeHooks:
+    """Hooks into a running Lightfall; raises RuntimeError with what to fix.
+
+    Runs on the RunEngine thread, so it creates no QObjects: the rixs client and
+    binder must already exist and the binder be enabled (``rixs_service_status`` or
+    the QERLIN Focus panel does that on the GUI thread), else the run would never
+    be scored.
+    """
+    from lightfall.acquire.nats_bridge import NATSPlanBridge
+    from lightfall.acquire.plans import adaptive
+    from lightfall.ipc.service import get_ipc_service
+
+    from . import runtime
+
+    ipc = get_ipc_service()
+    if ipc is None:
+        raise RuntimeError("NATS not available: qerlin_optimize requires Lightfall IPC")
+    client, binder = runtime._client, runtime._binder
+    if client is None or binder is None or not binder.enabled:
+        raise RuntimeError(
+            "the rixs-live binder is not enabled, so no frame would be scored: call "
+            "rixs_service_status (or open the QERLIN Focus panel) and retry")
+    return OptimizeHooks(
+        bridge=NATSPlanBridge(ipc),
+        client=client,
+        credentials=adaptive._get_tiled_credentials,
+        prefix=adaptive._get_lightfall_prefix,
+        state=adaptive._state,
+    )
+
+
+def _field(device) -> str:
+    """Primary data key of ``device`` (its first hinted field, else its name)."""
+    hints = getattr(device, "hints", None) or {}
+    return (hints.get("fields") or [device.name])[0]
+
+
+def score_of(entry: dict | None) -> tuple[float, float]:
+    """``(rixs_score, rixs_fwhm_px)`` from a cached frame score (None = timed out)."""
+    if not entry:
+        return 0.0, math.nan
+    fwhm = entry.get("fwhm_px")
+    try:
+        fwhm = float(fwhm)
+    except (TypeError, ValueError):
+        fwhm = math.nan
+    if not entry.get("score_valid") or not math.isfinite(fwhm) or fwhm <= 0:
+        return 0.0, math.nan
+    return 1.0 / fwhm, fwhm
+
+
+def _emit(state, signal: str, *args) -> None:
+    sig = getattr(state, signal, None)
+    if sig is not None:
+        try:
+            sig.emit(*args)
+        except Exception as ex:  # noqa: BLE001 - UI feedback only
+            logger.debug(f"qerlin_optimize: {signal} emit failed: {ex!r}")
+
+
+def qerlin_optimize(marana, motors, mono=None, exposure_s: float = 1.0,
+                    timeout: float = 300.0, score_timeout: float = 60.0, *,
+                    poll_interval: float = 0.1, hooks: OptimizeHooks | None = None,
+                    md: dict | None = None):
+    """Measure the targets tsuchinoko/gpCAM sends; score each Marana frame via rixs-live.
+
+    ``motors`` (N >= 1) are moved to each target in order (target i is in the axes
+    order of tsuchinoko's ``parameter_bounds``). ``mono`` (optional) only labels
+    the run's mono energy for resolving power. ``timeout`` is how long to wait for
+    new targets before closing the run; ``score_timeout`` how long to wait for each
+    frame's score. A frame not scored in time records ``rixs_score`` 0; after
+    ``MAX_CONSECUTIVE_TIMEOUTS`` in a row the plan fails with ScoreTimeoutError.
+    """
+    motors = list(motors)
+    if not motors:
+        raise ValueError("qerlin_optimize needs at least one motor")
+    hooks = hooks or lightfall_hooks()
+    state, bridge, client = hooks.state, hooks.bridge, hooks.client
+    state.stop_requested = False
+    state.pause_requested = False
+    if hasattr(state, "current_iteration"):
+        state.current_iteration = 0
+
+    fields = [_field(m) for m in motors]
+    mono_energy = None
+    if mono is not None:
+        mono_energy = float((yield from bps.rd(mono)))
+    frame_shape = tuple(marana.describe()[f"{marana.name}_image"]["shape"])
+    yield from bps.mv(marana.exposure_time, exposure_s)
+
+    score_sig = Signal(name=SCORE_FIELD, value=0.0)
+    fwhm_sig = Signal(name=FWHM_FIELD, value=math.nan)
+    lightfall_prefix = hooks.prefix()
+    experiment_id = str(uuid.uuid4())
+    _md = {
+        "plan_name": PLAN_NAME,
+        "motors": [m.name for m in motors],
+        "tsuchinoko": {"experiment_id": experiment_id},
+        "hints": {"dimensions": [([f], "primary") for f in fields]},
+        MD_KEY: build_rixs_md(f"{marana.name}_image", fields[0], frame_shape, mono_energy,
+                              motor_units=motor_units(motors[0]),
+                              image_stream=IMAGE_STREAM, motor_fields=fields),
+    }
+    _md.update(md or {})
+
+    bridge.subscribe(TARGETS_SUBJECT)
+    try:
+        run_uid = yield from bps.open_run(md=_md)
+        tiled_url, tiled_api_key, proxy_url = hooks.credentials()
+        bridge.publish(BIND_SUBJECT, {
+            "run_uid": run_uid,
+            "tiled_url": tiled_url,
+            "tiled_api_key": tiled_api_key,
+            "proxy_url": proxy_url,
+            "lightfall_prefix": lightfall_prefix,
+            "motor_names": [m.name for m in motors],
+            "detector_name": SCORE_FIELD,
+        })
+        yield from bps.sleep(0.5)  # let tsuchinoko process bind_run
+
+        point = 0  # == seq_num of the frame in the frames stream
+        consecutive_timeouts = 0
+        iteration = 0
+        deadline = time.monotonic() + timeout
+        while not state.stop_requested:
+            while state.pause_requested and not state.stop_requested:
+                yield from bps.sleep(poll_interval)
+            msg = bridge.try_get(TARGETS_SUBJECT)
+            if msg is None:
+                if time.monotonic() > deadline:
+                    _emit(state, "status_changed", "Timeout waiting for targets")
+                    logger.info("qerlin_optimize: no new targets; closing the run")
+                    break
+                yield from bps.sleep(poll_interval)
+                continue
+            targets = msg.get("targets", [])
+            iteration = msg.get("iteration", iteration + 1)
+            if hasattr(state, "current_iteration"):
+                state.current_iteration = iteration
+            _emit(state, "iteration_changed", iteration)
+            _emit(state, "targets_received", len(targets))
+
+            for target in targets:
+                if state.stop_requested:
+                    break
+                target = list(target)
+                if len(target) != len(motors):
+                    raise ValueError(f"target {target} has {len(target)} values for "
+                                     f"{len(motors)} motors {fields}")
+                args: list[Any] = []
+                for motor, value in zip(motors, target):
+                    args += [motor, float(value)]
+                yield from bps.mv(*args)
+                yield from bps.trigger_and_read([marana, *motors], name=IMAGE_STREAM)
+                point += 1
+
+                entry = None
+                score_deadline = time.monotonic() + score_timeout
+                while True:
+                    entry = client.get_score(run_uid, point)
+                    if entry is not None or time.monotonic() >= score_deadline:
+                        break
+                    yield from bps.sleep(poll_interval)
+                if entry is None:
+                    consecutive_timeouts += 1
+                    logger.warning(
+                        f"qerlin_optimize: no rixs-live score for frame {point} within "
+                        f"{score_timeout:g} s ({consecutive_timeouts} in a row); "
+                        f"recording score 0")
+                else:
+                    consecutive_timeouts = 0
+                score, fwhm = score_of(entry)
+                # put(), not bps.mv: a soft Signal's set() status waits for the
+                # readback to equal the setpoint, which never happens for NaN.
+                score_sig.put(score)
+                fwhm_sig.put(fwhm)
+                yield from bps.trigger_and_read([*motors, score_sig, fwhm_sig],
+                                                name="primary")
+                bridge.publish(f"{lightfall_prefix}.adaptive.measured", {
+                    "iteration": iteration, "n_new_points": 1})
+                if consecutive_timeouts >= MAX_CONSECUTIVE_TIMEOUTS:
+                    text = (f"rixs-live scored none of the last {consecutive_timeouts} "
+                            f"frames within {score_timeout:g} s each; it is probably not "
+                            f"running or not bound (check rixs_service_status)")
+                    _emit(state, "status_changed", text)
+                    raise ScoreTimeoutError(text)
+            deadline = time.monotonic() + timeout
+
+        yield from bps.close_run()
+    finally:
+        bridge.cleanup()

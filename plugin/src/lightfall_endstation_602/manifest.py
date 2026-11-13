@@ -9,6 +9,8 @@ manifest = PluginManifest(
                     "lightfall_endstation_602.backend:QerlinSimBackendPlugin"),
         PluginEntry("plan", "qerlin_focus_scan",
                     "lightfall_endstation_602.plan_plugin:QerlinFocusScanPlanPlugin"),
+        PluginEntry("plan", "qerlin_optimize",
+                    "lightfall_endstation_602.plan_plugin:QerlinOptimizePlanPlugin"),
         PluginEntry("panel", "qerlin_focus",
                     "lightfall_endstation_602.panel:QerlinFocusPanelPlugin",
                     preload=True),

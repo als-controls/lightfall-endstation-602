@@ -116,3 +116,85 @@ def test_bind_emits_bind_sent(fake_ipc, qtbot):
     cl.bindSent.connect(seen.append)
     cl.bind_run("u1")
     assert seen == ["u1"]
+
+
+# -- per-frame score cache -----------------------------------------------------
+
+def test_frame_scores_cached_without_preview(fake_ipc, qtbot):
+    cl = RixsServiceClient(ipc=fake_ipc)
+    assert cl.get_score("u", 1) is None
+    fake_ipc.emit(c.SUBJ_FRAME, {"run_uid": "u", "seq_num": 1, "fwhm_px": 6.0,
+                                 "score_valid": True, "positions": {"a": 1.0},
+                                 "preview": {"b64": "..."}, "centroid": [1, 2]})
+    got = cl.get_score("u", 1)
+    assert got == {"run_uid": "u", "seq_num": 1, "fwhm_px": 6.0, "score_valid": True,
+                   "positions": {"a": 1.0}}
+    got["fwhm_px"] = 0  # a copy: callers cannot corrupt the cache
+    assert cl.get_score("u", 1)["fwhm_px"] == 6.0
+    assert cl.get_score("u", 2) is None and cl.get_score("other", 1) is None
+
+
+def test_score_cache_ignores_malformed_and_is_bounded(fake_ipc, monkeypatch):
+    cl = RixsServiceClient(ipc=fake_ipc)
+    for bad in (None, {}, {"run_uid": "u"}, {"run_uid": "", "seq_num": 1},
+                {"run_uid": "u", "seq_num": True}, {"run_uid": "u", "seq_num": "x"}):
+        cl.record_score(bad)
+    assert not cl._scores
+    monkeypatch.setattr(RixsServiceClient, "SCORE_CACHE_MAX", 3)
+    for i in range(1, 6):
+        cl.record_score({"run_uid": "u", "seq_num": i})
+    assert [k[1] for k in cl._scores] == [3, 4, 5]
+    cl.record_score({"run_uid": "v", "seq_num": 1})
+    cl.clear_scores("u")
+    assert list(cl._scores) == [("v", 1)]
+    cl.clear_scores()
+    assert not cl._scores
+
+
+def test_wait_score_timeout_and_wakeup(fake_ipc):
+    import threading
+    import time
+
+    cl = RixsServiceClient(ipc=fake_ipc)
+    t0 = time.monotonic()
+    assert cl.wait_score("u", 1, 0.05) is None
+    assert time.monotonic() - t0 >= 0.04
+    timer = threading.Timer(0.05, cl.record_score,
+                            args=({"run_uid": "u", "seq_num": 1, "fwhm_px": 5.0},))
+    timer.start()
+    got = cl.wait_score("u", 1, 5.0)
+    timer.join()
+    assert got["fwhm_px"] == 5.0
+    assert cl.wait_score("u", 1, 0.0)["fwhm_px"] == 5.0  # already there: no wait
+
+
+def test_score_cache_thread_safety(fake_ipc):
+    """Concurrent writers (as from IPC) and readers (as from the RunEngine) agree."""
+    import threading
+
+    cl = RixsServiceClient(ipc=fake_ipc)
+    n_writers, per = 4, 300
+    errors = []
+
+    def writer(w):
+        for i in range(per):
+            cl.record_score({"run_uid": f"r{w}", "seq_num": i + 1, "fwhm_px": float(i)})
+
+    def reader(w):
+        try:
+            for i in range(per):
+                got = cl.wait_score(f"r{w}", i + 1, 10.0)
+                assert got is not None and got["fwhm_px"] == float(i)
+                for _ in range(3):
+                    cl.get_score(f"r{w}", 1)
+        except Exception as ex:  # noqa: BLE001
+            errors.append(ex)
+
+    threads = [threading.Thread(target=reader, args=(w,)) for w in range(n_writers)]
+    threads += [threading.Thread(target=writer, args=(w,)) for w in range(n_writers)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    assert not errors and not any(t.is_alive() for t in threads)
+    assert len(cl._scores) == n_writers * per
