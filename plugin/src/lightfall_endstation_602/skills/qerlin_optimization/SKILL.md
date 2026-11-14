@@ -8,7 +8,7 @@ description: "N-D focusing on the QERLIN (ALS 6.0.2) RIXS spectrometer with gpCA
 Optimize two or more focusing motors **together**. gpCAM (running inside tsuchinoko)
 picks each next point, the `qerlin_optimize` plan moves there and takes one Marana
 frame, and rixs-live scores that frame. The objective is **maximize `rixs_score`**
-= 100 / FWHM (px) of the zeroth-order line, so a sharper line scores higher. A frame the
+= 1 / FWHM (px) of the zeroth-order line, so a sharper line scores higher. A frame the
 service cannot score (no line, too broad) has score 0.
 
 For a single motor, use the `qerlin_focusing` skill (coarse/fine 1D scans and a parabola
@@ -59,10 +59,10 @@ the defaults table.
         "acquisition_function": "ucb",
         "kernel": "matern_3_2",
         "initial_points": 7,
-        "hyperparameters": [25.0, 4.0, 0.08],
-        "hyperparameter_bounds": [[0.25, 2500.0], [1.0, 20.0], [0.01, 0.3]],
+        "hyperparameters": [0.005, 8.0, 0.1],
+        "hyperparameter_bounds": [[2.5e-5, 0.25], [1.0, 20.0], [0.01, 0.3]],
         "training_method": "global",
-        "global_training": [8, 12, 16, 20, 25]
+        "global_training": [6, 10, 15, 20, 25]
       }
       ```
 
@@ -78,18 +78,20 @@ the defaults table.
      exploiting the sharpest region with exploring uncertain ones (`variance` only
      explores).
    - `kernel: "matern_3_2"`, anisotropic: `hyperparameters` = [signal variance, one
-     length scale per motor]. 25.0 = (5 score units)^2 suits `rixs_score` = 100/FWHM px
-     (about 4 to 20). Length scales: about a quarter of each motor's bound span (4.0 for
-     an 18-unit pitch span, 0.08 mm for a 0.3 mm Sample X span); `hyperparameter_bounds`
-     per length scale about [span/20, span] (pitch [1, 20], Sample X [0.01, 0.3] mm). For
-     other bounds or a third motor, add one length scale and one bound pair per motor by
-     the same rule; the signal-variance entries stay [25.0] and [0.25, 2500.0].
+     length scale per motor]. 0.005 ~ (0.07 score units)^2 suits `rixs_score` = 1/FWHM px
+     (about 0.04 to 0.2). Length scales: about half of each motor's bound span (8.0 for
+     an 18-unit pitch span, 0.1 mm for a 0.3 mm Sample X span; training settles near
+     12 and 0.12 mm on the sim); `hyperparameter_bounds` per length scale about
+     [span/20, span] (pitch [1, 20], Sample X [0.01, 0.3] mm). For other bounds or a
+     third motor, add one length scale and one bound pair per motor by the same rule;
+     the signal-variance entries stay [0.005] and [2.5e-5, 0.25].
    - `initial_points: 7` random points first (2 x N + 3; use 9 for 3 motors).
    - `training_method: "global"` with `global_training` milestones: hyperparameters are
-     re-fit at those data counts.
-   - Noise: tsuchinoko tells gpCAM every measurement with variance 1.0 (fixed), which is
-     why `rixs_score` is 100/FWHM and not 1/FWHM; do not send `noise_function` (gpCAM
-     rejects a noise function together with measured variances) or `noise_variances`.
+     re-fit once the point count exceeds each milestone (6: right after the random
+     points). For 3 motors, start the milestones at 8.
+   - Noise: send neither `noise_function` nor `noise_variances`. tsuchinoko passes no
+     measurement variance, so gpCAM uses its own default ((1 % of mean score)^2); the
+     validation held up with 2-5 % FWHM scatter on top (see the notes).
    - Repeats: tsuchinoko has no setting against re-measuring a point. `qerlin_optimize`
      drops tsuchinoko's re-sent copies of a target it is already measuring; gpCAM may
      still ask for the same point twice near the optimum, which is fine.

@@ -2,9 +2,10 @@
 
 GPCAMInProcessEngine is built with ``tsuchinoko run``'s defaults and configured through
 NATSService's configure handler (the tsuchinoko_configure path); then Core's iteration
-steps run in-process against the sim focus model. Each measurement is told with
-variance 1.0, as tsuchinoko's TiledReader does, and scored like qerlin_optimize:
-SCORE_SCALE / FWHM, FWHM from the scorer calibration (FWHM^2 = 5.56 sigma^2 + 13.5).
+steps run in-process against the sim focus model. Each measurement carries no
+variance, as tsuchinoko's TiledReader reads it, so gpCAM applies its default noise; it
+is scored like qerlin_optimize: 1 / FWHM, FWHM from the scorer calibration
+(FWHM^2 = 5.56 sigma^2 + 13.5).
 """
 import asyncio
 import json
@@ -16,7 +17,6 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from lightfall_endstation_602.optimize import SCORE_SCALE
 from lightfall_endstation_602.sim.model import FocusModel
 
 SKILL = files("lightfall_endstation_602.skills").joinpath("qerlin_optimization")
@@ -34,6 +34,11 @@ def test_skill_inlines_the_reference_payload():
     assert p["acquisition_function"] != "variance"
     assert len(p["hyperparameters"]) == len(p["hyperparameter_bounds"]) == 1 + len(
         p["parameter_bounds"])
+    # gpCAM's default noise is used: no noise setting in the payload.
+    assert not {"noise_variances", "noise_function"} & set(p)
+    # Signal variance sized for rixs_score = 1/FWHM px (about 0.04 to 0.2).
+    lo, hi = p["hyperparameter_bounds"][0]
+    assert lo <= p["hyperparameters"][0] <= hi < 1.0
 
 
 class _Msg:
@@ -69,10 +74,12 @@ def test_configuration_finds_the_hidden_optimum():
     data, pos = Data(dimensionality=2), (0.0, 0.0)
     for _ in range(30):
         target = tuple(float(v) for v in engine.request_targets(pos)[0])
-        data.inject_new([(target, SCORE_SCALE / _fwhm(model, *target), 1.0, {})])
+        data.inject_new([(target, 1.0 / _fwhm(model, *target), None, {})])
         engine.update_measurements(data)
         engine.train()
         pos = target
+    # tsuchinoko replaces gpCAM's data on each update (no duplicated history).
+    assert len(engine.optimizer.x_data) == 30
     best = np.asarray(data.positions)[int(np.argmax(data.scores))]
     assert abs(best[0] - 104.0) < 0.5 and abs(best[1] + 0.80) < 0.01
     assert _fwhm(model, *best) < 5.2  # the floor is 5.1 px

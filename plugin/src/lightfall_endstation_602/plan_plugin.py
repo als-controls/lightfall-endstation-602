@@ -92,7 +92,7 @@ def _qerlin_optimize_ui(
     motor names (e.g. ["sm3_pitch", "sample_x"]) in the SAME order as the axes of
     tsuchinoko's parameter_bounds. Each target takes one Marana frame (the
     ``frames`` stream); rixs-live's FWHM of that frame becomes ``rixs_score`` =
-    100/FWHM px (0 when unscorable), which gpCAM maximizes, with ``rixs_fwhm_px``
+    1/FWHM px (0 when unscorable), which gpCAM maximizes, with ``rixs_fwhm_px``
     alongside, in the ``primary`` stream. UNITS: exposure_s, timeout (wait for new
     targets before closing the run) and score_timeout (wait for each frame's
     score) are in SECONDS. The run fails after 3 frames in a row go unscored

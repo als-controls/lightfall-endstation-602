@@ -3,8 +3,8 @@
   "acquisition_function": "ucb",
   "kernel": "matern_3_2",
   "initial_points": 7,
-  "hyperparameters": [25.0, 4.0, 0.08],
-  "hyperparameter_bounds": [[0.25, 2500.0], [1.0, 20.0], [0.01, 0.3]],
+  "hyperparameters": [0.005, 8.0, 0.1],
+  "hyperparameter_bounds": [[2.5e-5, 0.25], [1.0, 20.0], [0.01, 0.3]],
   "training_method": "global",
-  "global_training": [8, 12, 16, 20, 25]
+  "global_training": [6, 10, 15, 20, 25]
 }

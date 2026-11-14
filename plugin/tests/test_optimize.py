@@ -168,7 +168,7 @@ def test_optimize_streams_scores_and_handshake(rig, n):
         assert [e["data"][f] for f in names] == pytest.approx(t)
         fwhm = FakeScores.fwhm(t)
         assert e["data"]["rixs_fwhm_px"] == pytest.approx(fwhm)
-        assert e["data"]["rixs_score"] == pytest.approx(optimize.SCORE_SCALE / fwhm)
+        assert e["data"]["rixs_score"] == pytest.approx(1.0 / fwhm)
     assert scores.asked[-1] == (start["uid"], 4)
     assert {uid for uid, _ in scores.asked} == {start["uid"]}
 
@@ -267,9 +267,8 @@ def test_stop_request_ends_run(rig):
 
 def test_score_of():
     assert score_of(None)[0] == 0.0 and math.isnan(score_of(None)[1])
-    assert optimize.SCORE_SCALE == 100.0
-    assert score_of({"fwhm_px": 4.0, "score_valid": True}) == (25.0, 4.0)
-    assert score_of({"fwhm_px": 4.0, "score_valid": True}, 1.0) == (0.25, 4.0)
+    assert not hasattr(optimize, "SCORE_SCALE")
+    assert score_of({"fwhm_px": 4.0, "score_valid": True}) == (0.25, 4.0)
     assert score_of({"fwhm_px": 4.0, "score_valid": False})[0] == 0.0
     assert score_of({"fwhm_px": None, "score_valid": True})[0] == 0.0
     assert score_of({"fwhm_px": 0.0, "score_valid": True})[0] == 0.0

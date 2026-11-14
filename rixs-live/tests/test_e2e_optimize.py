@@ -19,7 +19,7 @@ import numpy as np
 import pytest
 from bluesky import RunEngine
 from bluesky_tiled_plugins import TiledWriter
-from lightfall_endstation_602.optimize import SCORE_SCALE, OptimizeHooks, qerlin_optimize
+from lightfall_endstation_602.optimize import OptimizeHooks, qerlin_optimize
 from lightfall_endstation_602.sim.devices import (
     AxisTracker, SimMarana, SimSampleX, SimSM3Pitch, get_sim_state,
 )
@@ -237,11 +237,11 @@ def test_e2e_optimize_2d(nats_server, live_tiled_app, sim_2d):  # noqa: F811
         assert [f["positions"]["sm3_pitch"], f["positions"]["sample_x"]] == pytest.approx(t)
         assert f["score_valid"], f
 
-    # What tsuchinoko read after each batch: aligned rows, scores = 100/FWHM of that frame.
+    # What tsuchinoko read after each batch: aligned rows, scores = 1/FWHM of that frame.
     assert [len(r["values"]) for r in events["reads"]] == [3, 6]
     last = events["reads"][-1]
     assert np.allclose(np.array(last["positions"]).T, targets)
-    want = [SCORE_SCALE / f["fwhm_px"] for f in frames]
+    want = [1.0 / f["fwhm_px"] for f in frames]
     assert last["values"] == pytest.approx(want)
     assert np.allclose(primary["rixs_fwhm_px"].values, [f["fwhm_px"] for f in frames])
     assert targets[int(np.argmax(last["values"]))] == BEST_TARGET

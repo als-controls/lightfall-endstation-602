@@ -50,7 +50,7 @@ Tests: `../../lightfall/.venv/Scripts/python -m pytest` in `plugin/`;
   - `qerlin_optimize(marana, motors, mono=None, exposure_s, timeout, score_timeout)`:
     N-D optimization (N >= 1 motors) driven by tsuchinoko/gpCAM. Each target gets one
     frame in the `frames` stream; rixs-live scores it and the plan writes
-    `rixs_score` (100/FWHM px, 0 when unscorable) and `rixs_fwhm_px` with the motors to
+    `rixs_score` (1/FWHM px, 0 when unscorable) and `rixs_fwhm_px` with the motors to
     `primary`, which tsuchinoko reads. Three unscored frames in a row fail the run.
     It shows Lightfall's adaptive-plan panel (Stop/Pause).
 - **Panel**: "QERLIN Focus" (Analysis).
@@ -163,7 +163,7 @@ Two scripts live outside git under
 
 To optimize several motors at once (e.g. SM3 pitch and Sample X together), gpCAM picks
 each point inside tsuchinoko, `qerlin_optimize` measures it, and rixs-live scores the
-frame; gpCAM maximizes `rixs_score` = 100/FWHM px.
+frame; gpCAM maximizes `rixs_score` = 1/FWHM px.
 
 1. Do steps 1-4 of the checklist above (NATS, rixs-live, backend, panel) with the same
    broker and topic prefix everywhere. Lightfall needs gpCAM installed (with its
