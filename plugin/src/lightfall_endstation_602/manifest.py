@@ -1,4 +1,4 @@
-"""Lightfall plugin manifest for lightfall-endstation-6.0.2."""
+"""Lightfall plugin manifest for lightfall-endstation-602."""
 
 from lightfall.plugins import PluginEntry, PluginManifest
 

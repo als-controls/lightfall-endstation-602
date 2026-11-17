@@ -1,4 +1,4 @@
-# lightfall-endstation-6.0.2
+# lightfall-endstation-602
 
 Lightfall integration for the ALS beamline 6.0.2 (QERLIN) endstation.
 
