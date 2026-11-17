@@ -1,6 +1,6 @@
 # lightfall-endstation-6.0.2
 
-Lightfall integration for the ALS beamline 6.0.2 (QERLIN) endstation. Internal project, kept private.
+Lightfall integration for the ALS beamline 6.0.2 (QERLIN) endstation.
 
 - `plugin/` - `lightfall-endstation-602` (import `lightfall_endstation_602`): Lightfall plugin with sim devices and UI.
 - `rixs-live/` - `rixs-live` (import `rixs_live`): headless NATS-bound analysis service wrapping the QERLIN RIXS code.
@@ -10,10 +10,12 @@ The service never imports the plugin at runtime.
 
 ## Distribution
 
-This is an internal ALS project. The repository stays private on ALS GitLab
-(`ncs/lightfall-endstation-6.0.2`), and QERLIN's code (`mRIXS-super-app`,
-imported as `rixs_app`) is an internal tool without a license. Don't publish
-this repository or the `rixs-live` package.
+Both packages are released under the Lightfall license (BSD-3-Clause, LBNL); see
+`LICENSE.md` and `LEGAL.md`.
+
+`rixs-live` depends on QERLIN's analysis code, `mRIXS-super-app` (imported as
+`rixs_app`). That code is not part of this repository and is not covered by its
+license; it is installed separately (see Setup).
 
 ## Setup
 

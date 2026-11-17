@@ -6,6 +6,8 @@ build-backend = "hatchling.build"
 name = "rixs-live"
 description = "Headless RIXS analysis service for ALS 6.0.2: NATS-bound, Tiled-fed, wraps QERLIN"
 requires-python = ">=3.11"
+license = "BSD-3-Clause"
+license-files = ["LICENSE.md", "LEGAL.md"]
 dynamic = ["version"]
 dependencies = [
     "numpy",

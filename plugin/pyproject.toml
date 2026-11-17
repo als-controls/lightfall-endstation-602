@@ -6,6 +6,8 @@ build-backend = "hatchling.build"
 name = "lightfall-endstation-602"
 description = "Lightfall plugin for the ALS 6.0.2 (QERLIN) endstation"
 requires-python = ">=3.11"
+license = "BSD-3-Clause"
+license-files = ["LICENSE.md", "LEGAL.md"]
 dynamic = ["version"]
 dependencies = [
     "lightfall",
