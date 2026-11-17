@@ -8,3 +8,22 @@ dist/
 docs/superpowers/
 .superpowers/
 *.log
+*$py.class
+
+# Editors
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Tooling caches
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Local
+.env
