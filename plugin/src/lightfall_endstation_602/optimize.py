@@ -40,7 +40,7 @@ from loguru import logger
 from ophyd import Signal
 
 from .contract import MD_KEY, build_rixs_md
-from .plans import motor_units
+from .plans import frame_shape as marana_frame_shape, motor_units
 
 PLAN_NAME = "qerlin_optimize"
 IMAGE_STREAM = "frames"
@@ -244,7 +244,7 @@ def qerlin_optimize(marana, motors, mono=None, exposure_s: float = 1.0,
     mono_energy = None
     if mono is not None:
         mono_energy = float((yield from bps.rd(mono)))
-    frame_shape = tuple(marana.describe()[f"{marana.name}_image"]["shape"])
+    frame_shape = marana_frame_shape(marana)
     yield from bps.mv(marana.exposure_time, exposure_s)
 
     score_sig = Signal(name=SCORE_FIELD, value=0.0)

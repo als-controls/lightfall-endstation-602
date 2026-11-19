@@ -18,6 +18,23 @@ def motor_units(motor) -> str:
     return units if isinstance(units, str) else ""
 
 
+def frame_shape(marana) -> tuple[int, int]:
+    """``(height, width)`` of one Marana frame, before the run starts.
+
+    The simulated Marana describes ``<name>_image`` with shape ``(h, w)`` up front. The
+    real one (file-store HDF1) only adds that key once it has been staged and
+    triggered, and then as ``(num_images, h, w)``, so before a run its cam's
+    ``array_size`` is the answer. Either way only the last two dimensions are a frame.
+    """
+    key = f"{marana.name}_image"
+    desc = marana.describe()
+    if key in desc and desc[key].get("shape"):
+        h, w = tuple(desc[key]["shape"])[-2:]
+        return int(h), int(w)
+    size = marana.cam.array_size
+    return int(size.array_size_y.get()), int(size.array_size_x.get())
+
+
 def qerlin_focus_scan(marana, motor, mono, start: float, stop: float, num: int,
                       exposure_s: float = 1.0, md: dict | None = None):
     """Scan one focusing motor from start to stop in num points, one Marana frame each.
@@ -28,10 +45,10 @@ def qerlin_focus_scan(marana, motor, mono, start: float, stop: float, num: int,
     is a single confirming exposure.
     """
     mono_energy = yield from bps.rd(mono)
-    frame_shape = tuple(marana.describe()[f"{marana.name}_image"]["shape"])
+    shape = frame_shape(marana)
     yield from bps.mv(marana.exposure_time, exposure_s)
     _md = {MD_KEY: build_rixs_md(f"{marana.name}_image", motor.name,
-                                 frame_shape, float(mono_energy),
+                                 shape, float(mono_energy),
                                  motor_units=motor_units(motor))}
     _md.update(md or {})
     return (yield from bp.scan([marana], motor, start, stop, num, md=_md))
