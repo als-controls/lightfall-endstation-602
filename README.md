@@ -47,8 +47,11 @@ checkout; the plugin does not need to be installed in the service venv.
 
 ## What the plugin contributes
 
-- **Devices** (`qerlin_sim` backend): `marana` (2048x2048 frames), `sm3_pitch`,
-  `sample_x` (mm), `mono_energy` (eV). See the table in the live demo checklist.
+- **Devices** (`qerlin_sim` backend): `sim_marana` (2048x2048 frames), `sim_sm3_pitch`,
+  `sim_sample_x` (mm), `sim_mono_energy` (eV). See the table in the live demo checklist.
+  The `sim_` prefix keeps them apart from the real devices in the beamline's own happi
+  DB (the camera `marana`, BCS motors such as `sm3_mirror_pitch` and `mono_energy`), so
+  both backends can be enabled and mixed, e.g. the real `marana` with `sim_sm3_pitch`.
 - **Plans** (category `rixs`):
   - `qerlin_focus_scan(marana, motor, mono, start, stop, num, exposure_s)`: a 1D
     focus scan along any motor; rixs-live fits FWHM vs position.
@@ -195,10 +198,10 @@ Two scripts live outside git under
 
    | Device | Units | Limits | Start | Hidden optimum (`LIGHTFALL_SIM_SEED`) |
    |---|---|---|---|---|
-   | `sm3_pitch` | native (as logged) | 90..125 | 105 | 100..114 (unset: 104.0) |
-   | `sample_x` | mm | -1.5..0.5 | -0.85 | -0.85..-0.70 (unset: -0.80) |
-   | `mono_energy` | eV | 0..5000 | 850 | |
-   | `marana` | 2048x2048 uint16 frames | | | |
+   | `sim_sm3_pitch` | native (as logged) | 90..125 | 105 | 100..114 (unset: 104.0) |
+   | `sim_sample_x` | mm | -1.5..0.5 | -0.85 | -0.85..-0.70 (unset: -0.80) |
+   | `sim_mono_energy` | eV | 0..5000 | 850 | |
+   | `sim_marana` | 2048x2048 uint16 frames | | | |
 
    The sim line width depends on both motors and is calibrated to QERLIN's real scans
    (about 5 px FWHM at best; pitch +12 -> ~18.5 px, -6 -> ~8.5 px; Sample X +-0.1 mm ->
@@ -211,12 +214,12 @@ Two scripts live outside git under
    Lightfall's session to rixs-live is down, and a scan started meanwhile reads
    "run <uid> not analysed: rixs-live not responding". `rixs_service_status`
    reports the same state.
-5. **Plan from the UI.** Run `qerlin_focus_scan` once (devices marana, motor
-   = `sm3_pitch`, mono; defaults 98..116, 19 points). The left plot fills with
+5. **Plan from the UI.** Run `qerlin_focus_scan` once (devices `sim_marana`, motor
+   = `sim_sm3_pitch`, mono `sim_mono_energy`; defaults 98..116, 19 points). The left plot fills with
    FWHM vs position, its x axis labelled with the motor name and units from the
-   service (`sm3_pitch`, or `sample_x (mm)`), the right shows the zeroth-order
+   service (`sim_sm3_pitch`, or `sim_sample_x (mm)`), the right shows the zeroth-order
    preview with its fitted line, and on the `zeroth.complete` event the fitted
-   parabola and a vertical line at the optimum appear. Then scan `sample_x`,
+   parabola and a vertical line at the optimum appear. Then scan `sim_sample_x`,
    e.g. -0.92..-0.80 mm in 13 points.
 6. **Agent.** Open the "qerlin" agent in the assistant panel and ask it to
    focus the spectrometer. It checks `rixs_service_status`, then, like QERLIN,
@@ -250,7 +253,7 @@ frame; gpCAM maximizes `rixs_score` = 1/FWHM px.
    no 1D fit"); `best_measured.positions` holds the best measured point.
 
 Run it by hand from the Plans panel or `lightfall_run_plan` with
-`{"marana": "marana", "motors": ["sm3_pitch", "sample_x"], "mono": "mono_energy"}`
+`{"marana": "sim_marana", "motors": ["sim_sm3_pitch", "sim_sample_x"], "mono": "sim_mono_energy"}`
 after configuring tsuchinoko (the `parameter_bounds` axes in the same order as
 `motors`). The plan refuses to start until the rixs binder is enabled (open the QERLIN
 Focus panel or call `rixs_service_status`).

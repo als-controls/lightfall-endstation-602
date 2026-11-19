@@ -17,9 +17,9 @@ def rig():
     state = get_sim_state()
     old = state.model, state.axes
     state.model, state.axes = FocusModel(best_pitch=104.0), AxisTracker()
-    sm3 = SimSM3Pitch(name="sm3_pitch")
-    mono = SimMonoEnergy(name="mono_energy")
-    cam = SimMarana(name="marana", frame_shape=(2048, 2048))
+    sm3 = SimSM3Pitch(name="sim_sm3_pitch")
+    mono = SimMonoEnergy(name="sim_mono_energy")
+    cam = SimMarana(name="sim_marana", frame_shape=(2048, 2048))
     yield cam, sm3, mono
     state.model, state.axes = old
 
@@ -36,26 +36,26 @@ def test_focus_scan_md_and_events(rig):
     start = next(d for n, d in docs if n == "start")
     rixs = start["rixs"]
     assert rixs["kind"] == "zeroth_order_focus"
-    assert rixs["image_field"] == "marana_image"
-    assert rixs["motor_field"] == "sm3_pitch"
+    assert rixs["image_field"] == "sim_marana_image"
+    assert rixs["motor_field"] == "sim_sm3_pitch"
     assert rixs["frame_shape"] == [2048, 2048]
     assert rixs["mono_energy_ev"] == 850.0
     assert rixs["motor_units"] == ""  # SM3 pitch: native units, no egu
     ev = [d for n, d in docs if n == "event"]
     assert len(ev) == 5
-    assert [e["data"]["sm3_pitch"] for e in ev] == pytest.approx(np.linspace(100, 108, 5))
-    assert cam.exposure_time.get() == 0.5
+    assert [e["data"]["sim_sm3_pitch"] for e in ev] == pytest.approx(np.linspace(100, 108, 5))
+    assert cam.cam.acquire_time.get() == 0.5
 
 
 def test_focus_scan_any_motor_sample_x(rig):
     cam, _, mono = rig
-    sx = SimSampleX(name="sample_x")
+    sx = SimSampleX(name="sim_sample_x")
     docs = _run(qerlin_focus_scan(cam, sx, mono, -0.88, -0.76, 3, exposure_s=0.5))
     rixs = next(d for n, d in docs if n == "start")["rixs"]
-    assert rixs["motor_field"] == "sample_x"
+    assert rixs["motor_field"] == "sim_sample_x"
     assert rixs["motor_units"] == "mm"
     ev = [d for n, d in docs if n == "event"]
-    assert [e["data"]["sample_x"] for e in ev] == pytest.approx([-0.88, -0.82, -0.76])
+    assert [e["data"]["sim_sample_x"] for e in ev] == pytest.approx([-0.88, -0.82, -0.76])
 
 
 def test_motor_units_fallbacks():
@@ -117,7 +117,7 @@ def test_plan_plugin_motor_filter_is_any_motor():
     hints = get_type_hints(plan_plugin._qerlin_focus_scan_ui, include_extras=True)
     meta = get_args(hints["motor"])[1:]
     assert DeviceFilter(category="motor") in meta
-    assert any(isinstance(m, DeviceDefault) and m.names == ("sm3_pitch",) for m in meta)
+    assert any(isinstance(m, DeviceDefault) and m.names == ("sim_sm3_pitch",) for m in meta)
 
 
 def test_sim_motors_are_motor_category():
@@ -128,4 +128,58 @@ def test_sim_motors_are_motor_category():
     path = files("lightfall_endstation_602.sim").joinpath("qerlin_happi.json")
     cats = {r.item.name: str(_guess_category(r.item))
             for r in happi.Client(path=str(path)).search()}
-    assert cats["sm3_pitch"] == cats["sample_x"] == "motor"
+    assert cats["sim_sm3_pitch"] == cats["sim_sample_x"] == "motor"
+
+
+def test_focus_scan_without_mono(rig):
+    cam, sm3, _ = rig
+    docs = _run(qerlin_focus_scan(cam, sm3, None, 100.0, 104.0, 3, exposure_s=0.2))
+    rixs = next(d for n, d in docs if n == "start")["rixs"]
+    assert rixs["mono_energy_ev"] is None
+    assert len([d for n, d in docs if n == "event"]) == 3
+    assert cam.cam.acquire_time.get() == 0.2
+
+
+def _msgs_until_open_run(plan):
+    """Plan messages up to and including open_run, answering each with None."""
+    msgs, ret = [], None
+    while True:
+        msg = plan.send(ret)
+        msgs.append(msg)
+        if msg.command == "open_run":
+            return msgs
+        ret = None
+
+
+def test_focus_scan_drives_real_marana(rig):
+    """The real Marana: exposure on cam.acquire_time, frames named by Pva1."""
+    from ophyd.sim import make_fake_device
+
+    from lightfall_endstation_602.devices import Marana
+
+    _, sm3, _ = rig
+    real = make_fake_device(Marana)("BL602:marana01:", name="marana")
+    real.cam.array_size.array_size_x.sim_put(2048)
+    real.cam.array_size.array_size_y.sim_put(2048)
+    real.pva1.pv_name.sim_put("BL602:marana01:Pva1:Image")
+    msgs = _msgs_until_open_run(
+        qerlin_focus_scan(real, sm3, None, 104.0, 106.0, 3, exposure_s=0.1))
+    sets = [(m.obj, m.args[0]) for m in msgs if m.command == "set"]
+    assert (real.cam.acquire_time, 0.1) in sets
+    rixs = msgs[-1].kwargs["rixs"]
+    assert rixs["frame_shape"] == [2048, 2048]
+    assert rixs["pva_channel"] == "BL602:marana01:Pva1:Image"
+    assert rixs["frame_counter_field"] == "marana_array_counter"
+    assert rixs["mono_energy_ev"] is None
+
+
+def test_marana_picker_pattern():
+    import re
+
+    from lightfall_endstation_602.plan_plugin import MARANA_NAME_PATTERN
+
+    def ok(name):
+        return bool(re.match(MARANA_NAME_PATTERN, name, re.IGNORECASE))
+
+    assert ok("marana") and ok("sim_marana") and ok("marana2")
+    assert not ok("marana_temperature")

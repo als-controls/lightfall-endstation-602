@@ -171,9 +171,9 @@ def _run_scan(writer_client, loop, session, timings, async_writer=False):
     else:
         RE.subscribe(tw)
         RE.subscribe(binder)
-    sm3 = SimSM3Pitch(name="sm3_pitch")
-    marana = SimMarana(name="marana", frame_shape=FRAME_SHAPE)
-    md = {"rixs": build_rixs_md("marana_image", "sm3_pitch", FRAME_SHAPE, 850.0)}
+    sm3 = SimSM3Pitch(name="sim_sm3_pitch")
+    marana = SimMarana(name="sim_marana", frame_shape=FRAME_SHAPE)
+    md = {"rixs": build_rixs_md("sim_marana_image", "sim_sm3_pitch", FRAME_SHAPE, 850.0)}
     (uid,) = RE(bp.scan([marana], sm3, BEST - 6.0, BEST + 6.0, 7, md=md))
     if async_writer:
         tw.close()  # off the event loop: the service keeps working while this drains
@@ -222,7 +222,7 @@ async def _smoke(nats_url, tiled_app, async_writer):
     assert result["status"] == "ok"
     assert {k: v for k, v in result["result"].items()} == {
         k: v for k, v in done.items() if k not in ("instance_id", "seq")}
-    assert done["run_uid"] == uid and done["motor_field"] == "sm3_pitch"
+    assert done["run_uid"] == uid and done["motor_field"] == "sim_sm3_pitch"
     assert [f["seq_num"] for f in events["frame"]] == [1, 2, 3, 4, 5, 6, 7]
     assert done["fit"]["ok"], done["fit"]
     assert abs(done["fit"]["optimal_position"] - BEST) < 1.5, done["fit"]  # lopsided

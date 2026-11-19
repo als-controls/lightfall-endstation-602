@@ -30,8 +30,11 @@ the defaults table.
 
    | Motor | Units | Suggested bounds | Limits |
    |---|---|---|---|
-   | `sm3_pitch` (SM3 Mirror Pitch) | native units as logged | about 98 to 116 | 90..125 |
-   | `sample_x` (Sample X) | mm | about -0.95 to -0.65 | -1.5..0.5 |
+   | `sim_sm3_pitch` (SM3 Mirror Pitch) | native units as logged | about 98 to 116 | 90..125 |
+   | `sim_sample_x` (Sample X) | mm | about -0.95 to -0.65 | -1.5..0.5 |
+
+   These are the simulated motors (`sim_` prefix); real devices have no prefix and may
+   be offline.
 
    For any other motor, read its position and limits with `lightfall_read_device` and
    ask. Keep the motor order fixed from here on: it is the axis order of
@@ -51,7 +54,7 @@ the defaults table.
       poll `tsuchinoko_status()` until `state == "Inactive"` (configure does not reset
       data; the stop does).
    3. `tsuchinoko_configure(payload=...)` with this payload (also in
-      `references/gpcam-configure.json`), for `sm3_pitch` then `sample_x`:
+      `references/gpcam-configure.json`), for `sim_sm3_pitch` then `sim_sample_x`:
 
       ```json
       {
@@ -100,8 +103,8 @@ the defaults table.
    ```
    lightfall_run_plan(
        plan_name="qerlin_optimize",
-       params={"marana": "marana", "motors": ["sm3_pitch", "sample_x"],
-               "mono": "mono_energy", "exposure_s": 1.0,
+       params={"marana": "sim_marana", "motors": ["sim_sm3_pitch", "sim_sample_x"],
+               "mono": "sim_mono_energy", "exposure_s": 1.0,
                "timeout": 300.0, "score_timeout": 60.0},
        reason="Optimize SM3 pitch and Sample X together with gpCAM (30 points)",
    )

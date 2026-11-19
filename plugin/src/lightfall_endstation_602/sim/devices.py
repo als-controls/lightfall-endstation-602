@@ -20,8 +20,8 @@ from .model import FocusModel, render_frame
 log = logging.getLogger(__name__)
 
 
-SM3_NAME = "sm3_pitch"
-SAMPLE_X_NAME = "sample_x"
+SM3_NAME = "sim_sm3_pitch"
+SAMPLE_X_NAME = "sim_sample_x"
 TRACKED_NAMES = (SM3_NAME, SAMPLE_X_NAME)
 
 
@@ -35,11 +35,11 @@ def _position(obj) -> float | None:
 class AxisTracker:
     """Every live top-level ophyd object named like a focusing motor; picks the moved one.
 
-    SimMarana must follow whichever ``sm3_pitch`` / ``sample_x`` the user actually
-    moves, and that need not be a device this module built: in Lightfall, two
-    backends can offer the same name (the mock backend's SynAxis ``sample_x``
-    wins the catalog name; the happi one is skipped, then built anyway by
-    happi's reconnect pass). So the tracker keeps every candidate by name
+    SimMarana must follow whichever ``sim_sm3_pitch`` / ``sim_sample_x`` the user
+    actually moves, and that need not be a device this module built: in Lightfall,
+    two backends can offer the same name (only one wins the catalog name; the other
+    can still be built by happi's reconnect pass). The ``sim_`` prefix keeps the sim
+    devices clear of real and mock names, but the tracker stays defensive. So the tracker keeps every candidate by name
     (an ophyd instantiation callback, plus one ``gc`` sweep for objects built
     before this module was imported) and, at each frame, uses the candidate whose
     position changed most recently; until one moves, the newest Sim* instance.
@@ -207,15 +207,22 @@ class SimMonoEnergy(_LimitedAxis):
     _egu = "eV"
 
 
+class SimMaranaCam(Device):
+    """The slice of the real Marana's areaDetector cam (``cam1:``) the plans use."""
+
+    acquire_time = Cpt(Signal, value=1.0, kind="config")  # exposure, seconds
+
+
 class SimMarana(Device):
     """Marana-like 2D detector; frame width depends on current SM3 pitch and Sample X.
 
-    The motors are found by name (``sm3_pitch``, ``sample_x``) at each trigger,
-    through :class:`AxisTracker`, not handed in.
+    The motors are found by name (``sim_sm3_pitch``, ``sim_sample_x``) at each trigger,
+    through :class:`AxisTracker`, not handed in. Exposure is ``cam.acquire_time``,
+    as on the real Marana, so the same plans drive both.
     """
 
     image = Cpt(Signal, value=None, kind="normal")
-    exposure_time = Cpt(Signal, value=1.0, kind="config")
+    cam = Cpt(SimMaranaCam, "", kind="config")
 
     def __init__(self, name, frame_shape: tuple[int, int] = (2048, 2048), **kw):
         super().__init__(name=name, **kw)
@@ -243,7 +250,7 @@ class SimMarana(Device):
         # No Sample X motor: treat Sample X as at its best for this pitch.
         sx = state.axes.resolve(SAMPLE_X_NAME, SimSampleX)
         sample_x = None if sx is None else float(sx.position)
-        frame = render_frame(state.model, pitch, float(self.exposure_time.get()),
+        frame = render_frame(state.model, pitch, float(self.cam.acquire_time.get()),
                              shape=self.frame_shape, sample_x=sample_x)
         self.image.put(frame)
         st = Status()

@@ -6,15 +6,15 @@
   ALS beamline 6.0.2; the Andor **Marana** CMOS camera records the dispersed signal.
 - **Zeroth order (m = 0)**: the undispersed specular beam on the detector. It is the
   sharpest feature and the energy reference, so its width is what we focus on.
-- **SM3 mirror pitch** (`sm3_pitch`, native units as logged at the beamline, limits
+- **SM3 mirror pitch** (`sim_sm3_pitch` in simulation, `sm3_mirror_pitch` on BCS; native units as logged at the beamline, limits
   90..125; QERLIN's best values were about 104-113): the mirror angle that sets focus on
   the detector. FWHM grows faster above the optimum than below it.
-- **Sample X** (`sample_x`, mm, limits -1.5..0.5; QERLIN's best values were about
+- **Sample X** (`sim_sample_x` in simulation; mm, limits -1.5..0.5; QERLIN's best values were about
   -0.82 and -0.72): sample position along the beam; the line broadens by roughly 150 px
   per mm away from best. Its optimum can move when SM3 pitch changes, so re-check it
   after every pitch change.
 - Other focusing variables exist (slits, ...); the focus scan takes any single motor.
-- **mono energy** (`mono_energy`, eV): incident photon energy; needed for resolving power.
+- **mono energy** (`sim_mono_energy` in simulation, `mono_energy` on BCS; eV): incident photon energy; needed for resolving power.
 
 ## Metrics
 

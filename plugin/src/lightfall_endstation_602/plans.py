@@ -55,20 +55,33 @@ def pva_frame_source(marana) -> dict:
             "frame_counter_field": counter.name}
 
 
+def set_exposure(marana, exposure_s: float):
+    """Set the Marana exposure: ``cam.acquire_time`` (seconds) on the real and sim cams."""
+    yield from bps.mv(marana.cam.acquire_time, exposure_s)
+
+
+def read_mono_energy(mono):
+    """The mono energy in eV for the run's metadata, or None without a mono."""
+    if mono is None:
+        return None
+    return float((yield from bps.rd(mono)))
+
+
 def qerlin_focus_scan(marana, motor, mono, start: float, stop: float, num: int,
                       exposure_s: float = 1.0, md: dict | None = None):
     """Scan one focusing motor from start to stop in num points, one Marana frame each.
 
     ``motor`` is any positioner (usually SM3 pitch, in its native units, or Sample X,
-    in mm); start/stop are in that motor's units. The start document carries the
-    ``rixs`` contract block rixs-live binds on. ``num == 1`` with ``start == stop``
-    is a single confirming exposure.
+    in mm); start/stop are in that motor's units. ``mono`` may be None; it only
+    labels the run's mono energy. The start document carries the ``rixs`` contract
+    block rixs-live binds on. ``num == 1`` with ``start == stop`` is a single
+    confirming exposure.
     """
-    mono_energy = yield from bps.rd(mono)
+    mono_energy = yield from read_mono_energy(mono)
     shape = frame_shape(marana)
-    yield from bps.mv(marana.exposure_time, exposure_s)
+    yield from set_exposure(marana, exposure_s)
     _md = {MD_KEY: build_rixs_md(f"{marana.name}_image", motor.name,
-                                 shape, float(mono_energy),
+                                 shape, mono_energy,
                                  motor_units=motor_units(motor),
                                  **pva_frame_source(marana))}
     _md.update(md or {})
