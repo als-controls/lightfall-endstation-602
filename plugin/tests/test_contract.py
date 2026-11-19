@@ -32,3 +32,16 @@ def test_build_rixs_md_motor_fields_must_start_with_motor_field():
     import pytest
     with pytest.raises(ValueError):
         build_rixs_md("marana_image", "sm3_pitch", (8, 8), None, motor_fields=["sample_x"])
+
+
+def test_build_rixs_md_pva_frame_source_together_or_not_at_all():
+    import pytest
+    md = build_rixs_md("marana_image", "sm3_pitch", (8, 8), None)
+    assert "pva_channel" not in md and "frame_counter_field" not in md
+    md = build_rixs_md("marana_image", "sm3_pitch", (8, 8), None,
+                       pva_channel="BL602:marana01:Pva1:Image",
+                       frame_counter_field="marana_array_counter")
+    assert md["pva_channel"] == "BL602:marana01:Pva1:Image"
+    assert md["frame_counter_field"] == "marana_array_counter"
+    with pytest.raises(ValueError):
+        build_rixs_md("marana_image", "sm3_pitch", (8, 8), None, pva_channel="X:Image")

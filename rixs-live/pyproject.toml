@@ -19,6 +19,7 @@ dependencies = [
     "pyyaml",
     "loguru",
     "mrixs-super-app",
+    "p4p>=4.1",
 ]
 
 [project.optional-dependencies]

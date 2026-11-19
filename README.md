@@ -62,6 +62,47 @@ Tests: `../../lightfall/.venv/Scripts/python -m pytest` in `plugin/`;
   `qerlin_optimization`, `autonomous_experiment` and `plan_review` skills and
   Lightfall's `autonomous_experiment` (tsuchinoko) tools.
 
+## Real Marana: frames over PVA
+
+The simulated Marana stores its frames in Tiled, and rixs-live reads them from
+there. The real Marana (`BL602:marana01:`) writes each run to an HDF5 file on
+602marana. Tiled can only serve that file after shussebora has copied it to
+bcgtiled at the end of capture, which is too late to score points while the scan
+runs. So for the real camera rixs-live takes the **pixels from the IOC's `Pva1`
+plugin** (an NTNDArray channel) and keeps reading **positions and `seq_num` from
+Tiled**, where scalar columns land live.
+
+- The plans add `pva_channel` (from `Pva1:PvName_RBV`, else `<prefix>Pva1:Image`)
+  and `frame_counter_field` (`marana_array_counter`) to the `rixs` start-doc block
+  whenever the detector has a `pva1` plugin. The sim has none, so nothing changes
+  for it.
+- Row to frame: each event reads `cam1:ArrayCounter_RBV` with a fresh CA get. The
+  driver stamps every NDArray with `uniqueId` = that counter. Staging puts Pva1 on
+  blocking callbacks, so the frame is posted before the acquisition completes.
+  rixs-live keeps the last `pva.buffer_frames` frames per channel and pairs each
+  row with the frame whose `uniqueId` matches its counter.
+- A row whose frame never arrives fails the run loudly on `rixs.error` after
+  `pva.frame_timeout_s` (default 20 s). The message names the channel, its
+  connection state and the buffered ids. A frame stamped well before the run
+  started (the counter reset after an IOC restart) is treated as not received.
+- Compressed or colour NTNDArrays are refused; leave Pva1's compression off.
+
+Run the service with the PVA settings for the IOC host:
+
+```
+rixs-live run --nats-url ... --lightfall-prefix ... \
+  --pva-addr-list 602marana.dhcp.lbl.gov \
+  --pva-channel BL602:marana01:Pva1:Image
+```
+
+`--pva-addr-list` turns broadcast search off, since the IOC is on another subnet.
+`--pva-channel` starts the monitor when the service starts, so the first frame of
+the first run is buffered even while the bind is still looking the run up in Tiled.
+Both can also go in the YAML config (`pva:` with `addr_list`, `auto_addr_list`,
+`channels`, `buffer_frames`, `frame_timeout_s`, `stale_slack_s`). The host running
+rixs-live must reach 602marana on PVA (TCP 5075; UDP 5076 for search). The CSM
+firewall group for 6.0.2 IOCs has to allow that.
+
 ## Demo
 
 ### Headless smoke (run 2026-10-30)

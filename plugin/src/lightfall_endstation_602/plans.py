@@ -35,6 +35,26 @@ def frame_shape(marana) -> tuple[int, int]:
     return int(size.array_size_y.get()), int(size.array_size_x.get())
 
 
+def pva_frame_source(marana) -> dict:
+    """``build_rixs_md`` kwargs naming the PVA frames of a real Marana; {} for the sim.
+
+    The real Marana's image is an external HDF5 file Tiled can serve only after
+    capture ends, so rixs-live reads its pixels from the Pva1 channel and joins
+    them to the events on ``array_counter``. The sim's frames are in Tiled already.
+    """
+    pva = getattr(marana, "pva1", None)
+    counter = getattr(marana, "array_counter", None)
+    if pva is None or counter is None:
+        return {}
+    channel = ""
+    try:
+        channel = str(pva.pv_name.get() or "").strip()
+    except Exception:  # noqa: BLE001 - fall back to the areaDetector default name
+        channel = ""
+    return {"pva_channel": channel or f"{pva.prefix}Image",
+            "frame_counter_field": counter.name}
+
+
 def qerlin_focus_scan(marana, motor, mono, start: float, stop: float, num: int,
                       exposure_s: float = 1.0, md: dict | None = None):
     """Scan one focusing motor from start to stop in num points, one Marana frame each.
@@ -49,6 +69,7 @@ def qerlin_focus_scan(marana, motor, mono, start: float, stop: float, num: int,
     yield from bps.mv(marana.exposure_time, exposure_s)
     _md = {MD_KEY: build_rixs_md(f"{marana.name}_image", motor.name,
                                  shape, float(mono_energy),
-                                 motor_units=motor_units(motor))}
+                                 motor_units=motor_units(motor),
+                                 **pva_frame_source(marana))}
     _md.update(md or {})
     return (yield from bp.scan([marana], motor, start, stop, num, md=_md))

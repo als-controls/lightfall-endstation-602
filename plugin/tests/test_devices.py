@@ -122,3 +122,41 @@ def test_frame_shape_from_the_sim_describe():
     from lightfall_endstation_602.sim.devices import SimMarana
 
     assert frame_shape(SimMarana(name="marana", frame_shape=(2048, 2048))) == (2048, 2048)
+
+
+# ----------------------------------------------------------- PVA frames for rixs-live
+
+
+def test_pva1_is_enabled_blocking_and_counter_is_read(monkeypatch):
+    """Pva1 posts each frame before acquisition completes; events carry the counter."""
+    _set_beamline(monkeypatch, "6.0.2")
+    dev = _marana()
+    sigs = {getattr(k, "attr_name", k): v for k, v in dev.pva1.stage_sigs.items()}
+    assert sigs.get("enable") == 1
+    assert sigs.get("blocking_callbacks") == "Yes"
+    assert "array_counter" in dev.read_attrs
+    assert dev.array_counter.name == "marana_array_counter"
+    assert Marana.array_counter.suffix == "cam1:ArrayCounter_RBV"
+
+
+def test_pva_frame_source_names_the_channel_and_counter(monkeypatch):
+    from lightfall_endstation_602.plans import pva_frame_source
+
+    _set_beamline(monkeypatch, "6.0.2")
+    dev = _marana()
+    dev.pva1.pv_name.sim_put("BL602:marana01:Pva1:Image")
+    assert pva_frame_source(dev) == {"pva_channel": "BL602:marana01:Pva1:Image",
+                                     "frame_counter_field": "marana_array_counter"}
+    dev.pva1.pv_name.sim_put("")  # unset readback: areaDetector's default name
+    assert pva_frame_source(dev)["pva_channel"] == "BL602:marana01:Pva1:Image"
+
+
+def test_sim_marana_keeps_its_frames_in_tiled():
+    from lightfall_endstation_602.plans import pva_frame_source
+    from lightfall_endstation_602.sim.devices import SimMarana
+
+    assert pva_frame_source(SimMarana(name="marana", frame_shape=(8, 8))) == {}
+
+
+def test_array_counter_is_read_fresh_not_from_the_monitor_cache():
+    assert Marana.array_counter.kwargs.get("auto_monitor") is False

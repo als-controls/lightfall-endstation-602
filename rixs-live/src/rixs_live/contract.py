@@ -35,6 +35,12 @@ SUBJ_DISCOVER = "_rixs.discover"
 #   1D fit (``fit.ok`` false, reason "multi-motor run: no 1D fit"); its complete
 #   payload's points carry ``positions`` and ``best_measured`` is the lowest-FWHM
 #   (highest-score) point with all its positions.
+# - ``pva_channel`` + ``frame_counter_field`` (both or neither): read each frame's
+#   pixels from that areaDetector PVA channel (NTNDArray) instead of Tiled. A real
+#   Marana writes its image to an external HDF5 file that Tiled can only serve once
+#   it has been copied off the IOC host, at the end of capture. Event rows (seq_num,
+#   motors) still come from Tiled; row -> frame is the NTNDArray ``uniqueId`` equal to
+#   the row's ``frame_counter_field`` value (the cam's ArrayCounter_RBV).
 
 
 @dataclass(frozen=True)
@@ -47,11 +53,17 @@ class RixsRunInfo:
     motor_units: str = ""  # SM3 pitch in its native units, Sample X in mm; "" if unknown
     image_stream: str = "primary"  # event stream with the image + motor rows
     motor_fields: tuple[str, ...] = ()  # () = just motor_field (a 1D run)
+    pva_channel: str = ""  # "" = frames come from Tiled's image_field
+    frame_counter_field: str = ""  # event field matching each frame's NTNDArray uniqueId
 
     @property
     def fields(self) -> tuple[str, ...]:
         """Every motor field of the run, ``motor_field`` first."""
         return self.motor_fields or (self.motor_field,)
+
+    @property
+    def uses_pva(self) -> bool:
+        return bool(self.pva_channel)
 
     @property
     def multi_motor(self) -> bool:
@@ -100,5 +112,12 @@ def parse_start_rixs(run_uid: str, start_doc: dict) -> RixsRunInfo | None:
             raise ValueError(f"duplicate rixs motor_fields {list(fields)!r}")
         if len(fields) == 1:
             fields = ()  # same as a plain 1D run
+    channel, counter = md.get("pva_channel"), md.get("frame_counter_field")
+    if channel is None and counter is None:
+        channel = counter = ""
+    elif not (isinstance(channel, str) and channel and isinstance(counter, str) and counter):
+        raise ValueError(f"rixs pva_channel {channel!r} and frame_counter_field {counter!r} "
+                         f"must both be non-empty strings (or both absent)")
     return RixsRunInfo(run_uid, image_field, motor_field, (h, w), md.get("mono_energy_ev"),
-                       units if isinstance(units, str) else "", stream, fields)
+                       units if isinstance(units, str) else "", stream, fields,
+                       channel, counter)

@@ -1,4 +1,9 @@
-"""rixs-live event loop: bind -> poll Tiled -> score + publish each frame; stop -> fit + complete."""
+"""rixs-live event loop: bind -> poll Tiled -> score + publish each frame; stop -> fit + complete.
+
+Frames come from the run's image field in Tiled or, when the start doc names a
+``pva_channel`` (the real Marana), from that PVA channel, joined to Tiled's event
+rows on the detector's array counter (see :mod:`rixs_live.pva_io`).
+"""
 from __future__ import annotations
 
 import asyncio
@@ -21,6 +26,7 @@ from rixs_live.contract import (
 )
 from rixs_live.focus import fit_focus_curve, make_preview, score_frame
 from rixs_live.nats_client import NatsClient
+from rixs_live.pva_io import PvaFrameBuffer, PvaRunReader, make_pva_context
 from rixs_live.tiled_io import FocusRunReader, connect_tiled, env_proxy, redact_proxy
 
 EVENTS = [SUBJ_STATUS, SUBJ_ERROR, SUBJ_FRAME, SUBJ_COMPLETE]
@@ -30,10 +36,15 @@ MULTI_MOTOR_NO_FIT = "multi-motor run: no 1D fit"
 
 
 class RixsLiveService:
-    def __init__(self, config: AppConfig, *, nats_client=None, tiled_connect=None) -> None:
+    def __init__(self, config: AppConfig, *, nats_client=None, tiled_connect=None,
+                 pva_context_factory=None) -> None:
         self._config = config
         self._nats = nats_client or NatsClient(config.nats)
         self._tiled_connect = tiled_connect or connect_tiled
+        self._pva_context_factory = pva_context_factory or (
+            lambda: make_pva_context(config.pva.addr_list, config.pva.auto_addr_list))
+        self._pva_context = None
+        self._pva_buffers: dict[str, PvaFrameBuffer] = {}
         self._warned_bind_key = False
         self._warned_prefix: str | None = None
         self._poll_task: asyncio.Task | None = None
@@ -58,6 +69,8 @@ class RixsLiveService:
         A closed connection never comes back, so exit non-zero and let a supervisor
         restart the service instead of sitting alive but deaf.
         """
+        for channel in self._config.pva.channels:
+            self._pva_buffer(channel)
         await self._nats.connect()
         self._nats.on_reconnected = self._on_reconnected
         await self._register_subscriptions()
@@ -72,7 +85,39 @@ class RixsLiveService:
         except (KeyboardInterrupt, asyncio.CancelledError):
             return 0
         finally:
+            self.close_pva()
             await self._nats.close()
+
+    def _pva_buffer(self, channel: str) -> PvaFrameBuffer:
+        """The started frame buffer of ``channel``: one monitor per channel, kept."""
+        buf = self._pva_buffers.get(channel)
+        if buf is None:
+            if self._pva_context is None:
+                self._pva_context = self._pva_context_factory()
+            buf = PvaFrameBuffer(channel, self._pva_context,
+                                 capacity=self._config.pva.buffer_frames)
+            buf.start()
+            self._pva_buffers[channel] = buf
+        return buf
+
+    def close_pva(self) -> None:
+        for buf in self._pva_buffers.values():
+            buf.close()
+        self._pva_buffers.clear()
+        ctx, self._pva_context = self._pva_context, None
+        if ctx is not None and hasattr(ctx, "close"):
+            ctx.close()
+
+    def _reader(self, run, info, start: dict):
+        """Frame reader for a bound run: Tiled's image field, or its PVA channel."""
+        if not info.uses_pva:
+            return FocusRunReader(run, info)
+        cfg = self._config.pva
+        t0 = start.get("time")
+        return PvaRunReader(
+            run, info, self._pva_buffer(info.pva_channel),
+            run_start_time=float(t0) if isinstance(t0, (int, float)) else None,
+            frame_timeout_s=cfg.frame_timeout_s, stale_slack_s=cfg.stale_slack_s)
 
     async def _on_reconnected(self) -> None:
         # Subscriptions are replayed by nats-py itself; the Tiled credentials came from
@@ -201,12 +246,13 @@ class RixsLiveService:
             if info is None:
                 logger.info(f"bind ignored for non-rixs run {run_uid}")
                 return
+            reader = self._reader(run, info, start)
             if self._current is not None:
                 logger.warning(f"replacing bound run {self._current['run_uid']}")
                 await self._teardown_poll()
             self._current = {
                 "run_uid": run_uid,
-                "reader": FocusRunReader(run, info),
+                "reader": reader,
                 "info": info,
                 "total": start.get("num_points"),
                 "next": 0,
@@ -215,8 +261,9 @@ class RixsLiveService:
             }
             self._poll_task = loop.create_task(self._poll_run(self._current))
             await self._status(self._current, "binding")
-            logger.info(f"bound run {run_uid} ({info.image_stream}.{info.image_field} vs "
-                        f"{', '.join(info.fields)})")
+            source = (f"PVA {info.pva_channel} by {info.frame_counter_field}"
+                      if info.uses_pva else f"{info.image_stream}.{info.image_field}")
+            logger.info(f"bound run {run_uid} ({source} vs {', '.join(info.fields)})")
         except Exception as ex:
             logger.exception(f"bind failed for {run_uid}")
             await self._nats.publish(SUBJ_ERROR, {"run_uid": run_uid, "error": str(ex)})

@@ -96,3 +96,23 @@ def test_plugin_nd_md_round_trips():
     with pytest.raises(ValueError):
         plugin_contract.build_rixs_md("marana_image", "sm3_pitch", (8, 8), None,
                                       motor_fields=["sample_x"])
+
+
+def test_plugin_pva_md_round_trips():
+    md = plugin_contract.build_rixs_md(
+        "marana_image", "sm3_pitch", (2048, 2048), 850.0,
+        pva_channel="BL602:marana01:Pva1:Image", frame_counter_field="marana_array_counter")
+    info = parse_start_rixs("u1", {"rixs": md})
+    assert info.uses_pva
+    assert info.pva_channel == "BL602:marana01:Pva1:Image"
+    assert info.frame_counter_field == "marana_array_counter"
+    assert not parse_start_rixs("u2", _doc()).uses_pva
+
+
+@pytest.mark.parametrize("over", [{"pva_channel": "X:Image"},
+                                  {"frame_counter_field": "c"},
+                                  {"pva_channel": "", "frame_counter_field": "c"},
+                                  {"pva_channel": 3, "frame_counter_field": "c"}])
+def test_parse_pva_fields_go_together(over):
+    with pytest.raises(ValueError, match="pva_channel"):
+        parse_start_rixs("u1", _doc(**over))

@@ -23,9 +23,20 @@ class TiledConfig(BaseModel):
     api_key: str | None = None
 
 
+class PvaConfig(BaseModel):
+    """PVA frame source (runs whose start doc names a ``pva_channel``)."""
+    addr_list: str = ""  # EPICS_PVA_ADDR_LIST, e.g. "602marana.dhcp.lbl.gov"; "" = env
+    auto_addr_list: bool | None = None  # EPICS_PVA_AUTO_ADDR_LIST; None = env
+    channels: list[str] = []  # monitored from service start (others from their first bind)
+    buffer_frames: int = 16  # frames kept per channel (2048x2048 uint16 = 8 MB each)
+    frame_timeout_s: float = 20.0  # an event row waits this long for its frame
+    stale_slack_s: float = 30.0  # frames stamped this long before run start are stale
+
+
 class AppConfig(BaseModel):
     nats: NatsConfig = NatsConfig()
     tiled: TiledConfig = TiledConfig()
+    pva: PvaConfig = PvaConfig()
     poll_interval_s: float = 0.5
     # Spectrometer dispersion; 0.0 means unknown -> fwhm_mev and resolving power are null.
     dispersion_mev_per_px: float = 0.0
@@ -42,7 +53,9 @@ def load_config(path: str | None = None, *, nats_url: str | None = None,
                 lightfall_prefix: str | None = None,
                 dispersion: float | None = None,
                 tiled_url: str | None = None,
-                tiled_api_key: str | None = None) -> AppConfig:
+                tiled_api_key: str | None = None,
+                pva_addr_list: str | None = None,
+                pva_channels: list[str] | tuple[str, ...] = ()) -> AppConfig:
     data = {}
     if path:
         with open(path) as f:
@@ -58,4 +71,11 @@ def load_config(path: str | None = None, *, nats_url: str | None = None,
         cfg.tiled.url = tiled_url
     if tiled_api_key:
         cfg.tiled.api_key = tiled_api_key
+    if pva_addr_list:
+        cfg.pva.addr_list = pva_addr_list
+        if cfg.pva.auto_addr_list is None:
+            cfg.pva.auto_addr_list = False  # an explicit list replaces broadcast search
+    for channel in pva_channels:
+        if channel not in cfg.pva.channels:
+            cfg.pva.channels.append(channel)
     return cfg

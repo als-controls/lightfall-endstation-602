@@ -40,7 +40,7 @@ from loguru import logger
 from ophyd import Signal
 
 from .contract import MD_KEY, build_rixs_md
-from .plans import frame_shape as marana_frame_shape, motor_units
+from .plans import frame_shape as marana_frame_shape, motor_units, pva_frame_source
 
 PLAN_NAME = "qerlin_optimize"
 IMAGE_STREAM = "frames"
@@ -258,7 +258,8 @@ def qerlin_optimize(marana, motors, mono=None, exposure_s: float = 1.0,
         "hints": {"dimensions": [([f], "primary") for f in fields]},
         MD_KEY: build_rixs_md(f"{marana.name}_image", fields[0], frame_shape, mono_energy,
                               motor_units=motor_units(motors[0]),
-                              image_stream=IMAGE_STREAM, motor_fields=fields),
+                              image_stream=IMAGE_STREAM, motor_fields=fields,
+                              **pva_frame_source(marana)),
     }
     _md.update(md or {})
 

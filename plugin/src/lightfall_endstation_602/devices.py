@@ -21,6 +21,7 @@ from ophyd import (
 )
 from ophyd.areadetector.base import ADComponent as C
 from ophyd.areadetector.cam import Andor3DetectorCam
+from ophyd.areadetector.plugins import PluginBase
 from ophyd.areadetector.filestore_mixins import (
     FileStoreHDF5IterativeWrite,
     FileStorePluginBase,
@@ -154,22 +155,43 @@ class MaranaHDF5Plugin(HDF5Plugin, FileStoreHDF5IterativeWrite):
                                f"{self._WARMUP_TIMEOUT_S:.0f} s of a warmup frame")
 
 
+class MaranaPvaPlugin(PluginBase):
+    """``Pva1:``: serves each NDArray as an NTNDArray on ``PvName_RBV``.
+
+    rixs-live reads the frames from here while a scan runs (the HDF5 file reaches
+    Tiled only after capture ends). Staging enables it with blocking callbacks
+    (PluginBase), so each frame is posted before the acquisition completes.
+    ``PvName_RBV`` is a char waveform, hence ``string=True`` (ophyd's PvaPlugin
+    reads it as numbers).
+    """
+
+    _plugin_type = "NDPluginPva"
+    pv_name = C(EpicsSignalRO, "PvName_RBV", string=True)
+
+
 class Marana(SingleTrigger, Andor3Detector):
     """Andor Marana sCMOS on the ADAndor3 IOC (e.g. prefix ``BL602:marana01:``).
 
     Plugins used: ``cam1:``, ``image1:`` (live view), ``Stats1:`` (frame
-    total/statistics, read per event) and ``HDF1:``, which writes one HDF5 file per
+    total/statistics, read per event), ``Pva1:`` (frames for rixs-live, matched to
+    events by ``array_counter``, the cam's ``ArrayCounter_RBV``, which equals each
+    NDArray's ``uniqueId``) and ``HDF1:``, which writes one HDF5 file per
     run under ``/data/<tiled_beamline>/marana01/%Y/%m/%d/`` (e.g.
     ``/data/6.0.2/marana01/...``) and adds the ``<name>_image`` field as an external
     resource. shussebora on 602marana copies each file to bcgtiled when capture ends
     and prunes the local copy once it is there.
     """
 
-    _default_read_attrs = ("hdf1", "stats1")
+    _default_read_attrs = ("hdf1", "stats1", "array_counter")
 
     cam = C(MaranaCam, "cam1:")
     image1 = C(ImagePlugin, "image1:")
     stats1 = C(StatsPlugin, "Stats1:")
+    pva1 = C(MaranaPvaPlugin, "Pva1:")
+    # auto_monitor=False: every read is a fresh CA get, made after the trigger has
+    # completed, so the counter can never be a cached value from the previous frame
+    # (which would pair this point with the wrong PVA frame, silently).
+    array_counter = C(EpicsSignalRO, "cam1:ArrayCounter_RBV", auto_monitor=False)
     # The template given here is only the construction-time default:
     # BeamlineDataComponent replaces it from the tiled_beamline preference.
     hdf1 = BeamlineDataComponent(
