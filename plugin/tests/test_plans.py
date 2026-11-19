@@ -44,7 +44,7 @@ def test_focus_scan_md_and_events(rig):
     ev = [d for n, d in docs if n == "event"]
     assert len(ev) == 5
     assert [e["data"]["sm3_pitch"] for e in ev] == pytest.approx(np.linspace(100, 108, 5))
-    assert cam.exposure_time.get() == 0.5
+    assert cam.cam.acquire_time.get() == 0.5
 
 
 def test_focus_scan_any_motor_sample_x(rig):
@@ -129,3 +129,57 @@ def test_sim_motors_are_motor_category():
     cats = {r.item.name: str(_guess_category(r.item))
             for r in happi.Client(path=str(path)).search()}
     assert cats["sm3_pitch"] == cats["sample_x"] == "motor"
+
+
+def test_focus_scan_without_mono(rig):
+    cam, sm3, _ = rig
+    docs = _run(qerlin_focus_scan(cam, sm3, None, 100.0, 104.0, 3, exposure_s=0.2))
+    rixs = next(d for n, d in docs if n == "start")["rixs"]
+    assert rixs["mono_energy_ev"] is None
+    assert len([d for n, d in docs if n == "event"]) == 3
+    assert cam.cam.acquire_time.get() == 0.2
+
+
+def _msgs_until_open_run(plan):
+    """Plan messages up to and including open_run, answering each with None."""
+    msgs, ret = [], None
+    while True:
+        msg = plan.send(ret)
+        msgs.append(msg)
+        if msg.command == "open_run":
+            return msgs
+        ret = None
+
+
+def test_focus_scan_drives_real_marana(rig):
+    """The real Marana: exposure on cam.acquire_time, frames named by Pva1."""
+    from ophyd.sim import make_fake_device
+
+    from lightfall_endstation_602.devices import Marana
+
+    _, sm3, _ = rig
+    real = make_fake_device(Marana)("BL602:marana01:", name="marana")
+    real.cam.array_size.array_size_x.sim_put(2048)
+    real.cam.array_size.array_size_y.sim_put(2048)
+    real.pva1.pv_name.sim_put("BL602:marana01:Pva1:Image")
+    msgs = _msgs_until_open_run(
+        qerlin_focus_scan(real, sm3, None, 104.0, 106.0, 3, exposure_s=0.1))
+    sets = [(m.obj, m.args[0]) for m in msgs if m.command == "set"]
+    assert (real.cam.acquire_time, 0.1) in sets
+    rixs = msgs[-1].kwargs["rixs"]
+    assert rixs["frame_shape"] == [2048, 2048]
+    assert rixs["pva_channel"] == "BL602:marana01:Pva1:Image"
+    assert rixs["frame_counter_field"] == "marana_array_counter"
+    assert rixs["mono_energy_ev"] is None
+
+
+def test_marana_picker_pattern():
+    import re
+
+    from lightfall_endstation_602.plan_plugin import MARANA_NAME_PATTERN
+
+    def ok(name):
+        return bool(re.match(MARANA_NAME_PATTERN, name, re.IGNORECASE))
+
+    assert ok("marana") and ok("sim_marana") and ok("marana2")
+    assert not ok("marana_temperature")

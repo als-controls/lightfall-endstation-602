@@ -178,7 +178,7 @@ def test_optimize_streams_scores_and_handshake(rig, n):
     stop = next(d for k, d in docs if k == "stop")
     assert stop["exit_status"] == "success"
     assert stop["num_events"] == {"frames": 4, "primary": 4}
-    assert rig.cam.exposure_time.get() == 0.25
+    assert rig.cam.cam.acquire_time.get() == 0.25
 
 
 def test_invalid_frame_scores_zero(rig):

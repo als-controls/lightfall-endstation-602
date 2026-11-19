@@ -11,22 +11,27 @@ from lightfall.ui.annotations import DeviceDefault, DeviceFilter, Range, Unit
 
 from .optimize import qerlin_optimize
 from .plans import qerlin_focus_scan
-from .sim.devices import SimMarana, SimMonoEnergy
+from .sim.devices import SimMonoEnergy
 
 
 def _cls(c: type) -> str:
     return f"{c.__module__}.{c.__name__}"
 
 
-MARANA_CLASS = _cls(SimMarana)
+# The real Marana (devices.Marana) and the sim (sim.devices.SimMarana) take the same
+# plans. Lightfall's DeviceFilterAny ORs only categories, not device classes, so the
+# picker matches by name: "marana", optionally prefixed or numbered, not e.g.
+# "marana_temperature".
+MARANA_NAME_PATTERN = r"^(\w+_)?marana\d*$"
 MONO_CLASS = _cls(SimMonoEnergy)
 
 
 def _qerlin_focus_scan_ui(
-    marana: Annotated[Any, DeviceFilter(device_class=MARANA_CLASS)],
+    marana: Annotated[Any, DeviceFilter(name_pattern=MARANA_NAME_PATTERN)],
     # Any motor; the sim backend tags sm3_pitch and sample_x as motors.
     motor: Annotated[Any, DeviceFilter(category="motor"), DeviceDefault("sm3_pitch")],
-    mono: Annotated[Any, DeviceFilter(device_class=MONO_CLASS)],
+    mono: Annotated[Any, DeviceFilter(device_class=MONO_CLASS),
+                    DeviceDefault("mono_energy")] = None,
     *,
     # No Unit(): start/stop are in the chosen motor's own units.
     start: float = 98.0,
@@ -44,7 +49,8 @@ def _qerlin_focus_scan_ui(
     a large num is a dense scan that leaves little for the agent to do, a small
     num (e.g. 5-9) is a coarse scan the agent refines iteratively. num=1 with
     start == stop is a single confirming exposure. Device args are names:
-    marana, motor (e.g. sm3_pitch or sample_x), mono. Each run's start
+    marana, motor (e.g. sm3_pitch or sample_x), mono (optional; it only labels the
+    run's mono energy). Each run's start
     document carries the ``rixs`` metadata that the rixs-live service binds on.
     """
     return (yield from qerlin_focus_scan(
@@ -74,7 +80,7 @@ def _adaptive_panel():
 
 @plan_with_ui(_adaptive_panel())
 def _qerlin_optimize_ui(
-    marana: Annotated[Any, DeviceFilter(device_class=MARANA_CLASS)],
+    marana: Annotated[Any, DeviceFilter(name_pattern=MARANA_NAME_PATTERN)],
     # Any motors, in the axes order of tsuchinoko's parameter_bounds.
     motors: Annotated[list[Any], DeviceFilter(category="motor"),
                       DeviceDefault("sm3_pitch", "sample_x")],

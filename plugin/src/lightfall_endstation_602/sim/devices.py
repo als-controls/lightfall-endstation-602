@@ -207,15 +207,22 @@ class SimMonoEnergy(_LimitedAxis):
     _egu = "eV"
 
 
+class SimMaranaCam(Device):
+    """The slice of the real Marana's areaDetector cam (``cam1:``) the plans use."""
+
+    acquire_time = Cpt(Signal, value=1.0, kind="config")  # exposure, seconds
+
+
 class SimMarana(Device):
     """Marana-like 2D detector; frame width depends on current SM3 pitch and Sample X.
 
     The motors are found by name (``sm3_pitch``, ``sample_x``) at each trigger,
-    through :class:`AxisTracker`, not handed in.
+    through :class:`AxisTracker`, not handed in. Exposure is ``cam.acquire_time``,
+    as on the real Marana, so the same plans drive both.
     """
 
     image = Cpt(Signal, value=None, kind="normal")
-    exposure_time = Cpt(Signal, value=1.0, kind="config")
+    cam = Cpt(SimMaranaCam, "", kind="config")
 
     def __init__(self, name, frame_shape: tuple[int, int] = (2048, 2048), **kw):
         super().__init__(name=name, **kw)
@@ -243,7 +250,7 @@ class SimMarana(Device):
         # No Sample X motor: treat Sample X as at its best for this pitch.
         sx = state.axes.resolve(SAMPLE_X_NAME, SimSampleX)
         sample_x = None if sx is None else float(sx.position)
-        frame = render_frame(state.model, pitch, float(self.exposure_time.get()),
+        frame = render_frame(state.model, pitch, float(self.cam.acquire_time.get()),
                              shape=self.frame_shape, sample_x=sample_x)
         self.image.put(frame)
         st = Status()

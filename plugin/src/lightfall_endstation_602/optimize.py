@@ -40,7 +40,8 @@ from loguru import logger
 from ophyd import Signal
 
 from .contract import MD_KEY, build_rixs_md
-from .plans import frame_shape as marana_frame_shape, motor_units, pva_frame_source
+from .plans import frame_shape as marana_frame_shape
+from .plans import motor_units, pva_frame_source, read_mono_energy, set_exposure
 
 PLAN_NAME = "qerlin_optimize"
 IMAGE_STREAM = "frames"
@@ -241,11 +242,9 @@ def qerlin_optimize(marana, motors, mono=None, exposure_s: float = 1.0,
         state.current_iteration = 0
 
     fields = [_field(m) for m in motors]
-    mono_energy = None
-    if mono is not None:
-        mono_energy = float((yield from bps.rd(mono)))
+    mono_energy = yield from read_mono_energy(mono)
     frame_shape = marana_frame_shape(marana)
-    yield from bps.mv(marana.exposure_time, exposure_s)
+    yield from set_exposure(marana, exposure_s)
 
     score_sig = Signal(name=SCORE_FIELD, value=0.0)
     fwhm_sig = Signal(name=FWHM_FIELD, value=math.nan)
