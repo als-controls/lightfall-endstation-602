@@ -92,11 +92,11 @@ def rig():
     state = get_sim_state()
     old = state.model, state.axes
     state.model, state.axes = FocusModel(best_pitch=104.0), AxisTracker()
-    cam = SimMarana(name="marana", frame_shape=(64, 64))
-    sm3 = SimSM3Pitch(name="sm3_pitch")
-    sx = SimSampleX(name="sample_x")
+    cam = SimMarana(name="sim_marana", frame_shape=(64, 64))
+    sm3 = SimSM3Pitch(name="sim_sm3_pitch")
+    sx = SimSampleX(name="sim_sample_x")
     aux = SynAxis(name="aux")
-    mono = SimMonoEnergy(name="mono_energy")
+    mono = SimMonoEnergy(name="sim_mono_energy")
     yield SimpleNamespace(cam=cam, motors=[sm3, sx, aux], mono=mono)
     state.model, state.axes = old
 
@@ -141,7 +141,7 @@ def test_optimize_streams_scores_and_handshake(rig, n):
     rixs = start[c.MD_KEY]
     assert rixs["image_stream"] == "frames"
     assert rixs["motor_field"] == names[0] and rixs["motor_fields"] == names
-    assert rixs["image_field"] == "marana_image" and rixs["frame_shape"] == [64, 64]
+    assert rixs["image_field"] == "sim_marana_image" and rixs["frame_shape"] == [64, 64]
     assert rixs["mono_energy_ev"] == 850.0
     assert start["tsuchinoko"]["experiment_id"]
     assert [list(d) for d in start["hints"]["dimensions"]] == [[[f], "primary"] for f in names]
@@ -161,10 +161,10 @@ def test_optimize_streams_scores_and_handshake(rig, n):
     assert [e["seq_num"] for e in frames] == [1, 2, 3, 4]
     assert [e["seq_num"] for e in primary] == [1, 2, 3, 4]
     for e, t in zip(frames, targets):
-        assert {"marana_image", *names} <= set(e["data"])
+        assert {"sim_marana_image", *names} <= set(e["data"])
         assert [e["data"][f] for f in names] == pytest.approx(t)
     for e, t in zip(primary, targets):
-        assert "marana_image" not in e["data"]
+        assert "sim_marana_image" not in e["data"]
         assert [e["data"][f] for f in names] == pytest.approx(t)
         fwhm = FakeScores.fwhm(t)
         assert e["data"]["rixs_fwhm_px"] == pytest.approx(fwhm)
@@ -406,7 +406,7 @@ def test_new_targets_queued_before_measured_are_kept(rig):
 
     docs = _run(qerlin_optimize(rig.cam, motors, None, timeout=0.1, score_timeout=1.0,
                                 poll_interval=0.01, hooks=_hooks(bridge, Scores(motors))))
-    assert [e["data"]["sm3_pitch"] for e in _events(docs, "primary")] == [104.0, 106.0]
+    assert [e["data"]["sim_sm3_pitch"] for e in _events(docs, "primary")] == [104.0, 106.0]
 
 
 

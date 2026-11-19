@@ -13,16 +13,24 @@ scan is always 1D (no 2D scans).
 **See `references/rixs-terminology.md`** for the terms (zeroth order, FWHM, resolving
 power) and the inspect-explain-run habit.
 
-Devices: `marana` (detector), `mono_energy` (eV) and the focusing motors:
+Devices: the Marana detector, the mono energy (eV, optional; it only labels the run) and
+the focusing motors. Simulated devices carry a `sim_` prefix (`sim_marana`,
+`sim_sm3_pitch`, `sim_sample_x`, `sim_mono_energy`); real ones don't (the camera `marana`,
+`BL602:marana01:`; BCS motors such as `sm3_mirror_pitch` and `mono_energy`, often
+offline). Real and simulated devices can be mixed, e.g. the real `marana` with
+`sim_sm3_pitch`. Check which ones are connected before scanning, and say which you used.
+
+The simulated focusing motors:
 
 | Motor | Units | Limits | Coarse scan (QERLIN practice) |
 |---|---|---|---|
-| `sm3_pitch` (SM3 Mirror Pitch) | native units as logged | 90..125 | about 98 to 116, step ~1 (19 points) |
-| `sample_x` (Sample X) | mm | -1.5..0.5 | a 0.12-0.15 mm span around the current position, step 0.01 (13-16 points) |
+| `sim_sm3_pitch` (SM3 Mirror Pitch) | native units as logged | 90..125 | about 98 to 116, step ~1 (19 points) |
+| `sim_sample_x` (Sample X) | mm | -1.5..0.5 | a 0.12-0.15 mm span around the current position, step 0.01 (13-16 points) |
 
 Plan: `qerlin_focus_scan(marana, motor, mono, start, stop, num, exposure_s)`; its device
-arguments are device names, `start`/`stop` are in the scanned motor's units, `exposure_s`
-is seconds. Use `motor="sm3_pitch"` unless told otherwise. `get_focus_result` returns
+arguments are device names (`mono` may be omitted), `start`/`stop` are in the scanned
+motor's units, `exposure_s` is seconds. Use SM3 pitch (`motor="sim_sm3_pitch"` in
+simulation) unless told otherwise. `get_focus_result` returns
 `motor_field` and `motor_units` (empty for SM3 pitch's native units).
 
 ### Order of motors

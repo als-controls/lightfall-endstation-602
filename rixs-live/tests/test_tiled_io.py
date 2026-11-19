@@ -16,7 +16,7 @@ SHAPE = (48, 64)  # small: these tests pin layout only, nothing is scored
 
 
 def _info(uid="run1", shape=SHAPE):
-    return RixsRunInfo(uid, "marana_image", "sm3_pitch", shape, 850.0)
+    return RixsRunInfo(uid, "sim_marana_image", "sim_sm3_pitch", shape, 850.0)
 
 
 def _scan(tiled_client, n=3, on_doc=None):
@@ -26,9 +26,9 @@ def _scan(tiled_client, n=3, on_doc=None):
     RE.subscribe(tw)
     if on_doc is not None:
         RE.subscribe(on_doc)  # after the writer: sees each doc once it is in Tiled
-    sm3 = SimSM3Pitch(name="sm3_pitch")
-    marana = SimMarana(name="marana", frame_shape=SHAPE)
-    md = {"rixs": build_rixs_md("marana_image", "sm3_pitch", SHAPE, 850.0)}
+    sm3 = SimSM3Pitch(name="sim_sm3_pitch")
+    marana = SimMarana(name="sim_marana", frame_shape=SHAPE)
+    md = {"rixs": build_rixs_md("sim_marana_image", "sim_sm3_pitch", SHAPE, 850.0)}
     (uid,) = RE(bp.scan([marana], sm3, 103.0, 105.0, n, md=md))
     return uid
 
@@ -40,12 +40,12 @@ def test_tiledwriter_layout_is_n_h_w_and_scalar_column(tiled_client):
     primary = run["primary"]
     # Real behavior (tiled 0.2.x, bluesky-tiled-plugins 2.0.x): the image is an
     # internal zarr array node stacked (n, H, W); the motor is a 1-D (n,) column.
-    # SynAxis also emits sm3_pitch_setpoint; we key on sm3_pitch exactly.
-    assert {"marana_image", "sm3_pitch", "sm3_pitch_setpoint", "seq_num"} <= set(primary)
-    assert primary["marana_image"].shape == (3, *SHAPE)
-    assert primary["sm3_pitch"].shape == (3,)
-    assert np.allclose(primary["sm3_pitch"].read(), [103.0, 104.0, 105.0])
-    assert primary["marana_image"][1:3].shape == (2, *SHAPE)  # row slicing works
+    # SynAxis also emits sim_sm3_pitch_setpoint; we key on sim_sm3_pitch exactly.
+    assert {"sim_marana_image", "sim_sm3_pitch", "sim_sm3_pitch_setpoint", "seq_num"} <= set(primary)
+    assert primary["sim_marana_image"].shape == (3, *SHAPE)
+    assert primary["sim_sm3_pitch"].shape == (3,)
+    assert np.allclose(primary["sim_sm3_pitch"].read(), [103.0, 104.0, 105.0])
+    assert primary["sim_marana_image"][1:3].shape == (2, *SHAPE)  # row slicing works
 
 
 def test_reader_reads_real_run(tiled_client):
@@ -55,7 +55,7 @@ def test_reader_reads_real_run(tiled_client):
     got = reader.read_new(0)
     assert [s for s, _, _ in got] == [1, 2, 3]
     assert np.allclose([p for _, p, _ in got], [103.0, 104.0, 105.0])
-    stored = run["primary"]["marana_image"].read()
+    stored = run["primary"]["sim_marana_image"].read()
     for i, (_, _, frame) in enumerate(got):
         assert frame.shape == SHAPE
         assert np.array_equal(frame, stored[i])
@@ -91,8 +91,8 @@ def test_reader_sees_frames_live_and_keyerror_before_stream(tiled_client):
 def _write_manual(client, images, positions):
     run = client.create_container(str(uuid.uuid4()))
     primary = run.create_container("primary")
-    primary.write_array(np.asarray(images, dtype=float), key="marana_image")
-    primary.write_array(np.asarray(positions, dtype=float), key="sm3_pitch")
+    primary.write_array(np.asarray(images, dtype=float), key="sim_marana_image")
+    primary.write_array(np.asarray(positions, dtype=float), key="sim_sm3_pitch")
     return run
 
 
@@ -134,8 +134,8 @@ def test_reader_missing_stream_raises_keyerror(tiled_client):
 def _write_scrambled(client, frames, seq, positions):
     run = client.create_container(str(uuid.uuid4()))
     primary = run.create_container("primary")
-    primary.write_array(np.asarray(frames, dtype=float), key="marana_image")
-    primary.write_array(np.asarray(positions, dtype=float), key="sm3_pitch")
+    primary.write_array(np.asarray(frames, dtype=float), key="sim_marana_image")
+    primary.write_array(np.asarray(positions, dtype=float), key="sim_sm3_pitch")
     primary.write_array(np.asarray(seq), key="seq_num")
     return run
 
@@ -181,11 +181,11 @@ def test_reader_reads_nd_run_from_named_stream(tiled_client):
     tw = TiledWriter(tiled_client, batch_size=1)
     RE = RunEngine({})
     RE.subscribe(tw)
-    sm3 = SimSM3Pitch(name="sm3_pitch")
-    sx = SimSampleX(name="sample_x")
-    marana = SimMarana(name="marana", frame_shape=SHAPE)
-    md = {"rixs": build_rixs_md("marana_image", "sm3_pitch", SHAPE, 850.0,
-                                image_stream="frames", motor_fields=["sm3_pitch", "sample_x"])}
+    sm3 = SimSM3Pitch(name="sim_sm3_pitch")
+    sx = SimSampleX(name="sim_sample_x")
+    marana = SimMarana(name="sim_marana", frame_shape=SHAPE)
+    md = {"rixs": build_rixs_md("sim_marana_image", "sim_sm3_pitch", SHAPE, 850.0,
+                                image_stream="frames", motor_fields=["sim_sm3_pitch", "sim_sample_x"])}
     targets = [(103.0, -0.9), (104.0, -0.8), (105.0, -0.7)]
 
     def plan():
@@ -198,11 +198,11 @@ def test_reader_reads_nd_run_from_named_stream(tiled_client):
 
     (uid,) = RE(plan())
     run = tiled_client[uid]
-    info = RixsRunInfo(uid, "marana_image", "sm3_pitch", SHAPE, 850.0, "", "frames",
-                       ("sm3_pitch", "sample_x"))
+    info = RixsRunInfo(uid, "sim_marana_image", "sim_sm3_pitch", SHAPE, 850.0, "", "frames",
+                       ("sim_sm3_pitch", "sim_sample_x"))
     got = FocusRunReader(run, info).read_new_rows(0)
     assert [g[0] for g in got] == [1, 2, 3]
-    assert [g[1] for g in got] == [{"sm3_pitch": pytest.approx(p), "sample_x": pytest.approx(x)}
+    assert [g[1] for g in got] == [{"sim_sm3_pitch": pytest.approx(p), "sim_sample_x": pytest.approx(x)}
                                    for p, x in targets]
     assert got[0][2].shape == SHAPE
     assert [g[1] for g in FocusRunReader(run, info).read_new(1)] == [104.0, 105.0]

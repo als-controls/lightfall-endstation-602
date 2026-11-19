@@ -17,9 +17,9 @@ def rig():
     state = get_sim_state()
     old = state.model, state.axes
     state.model, state.axes = FocusModel(best_pitch=104.0), AxisTracker()
-    sm3 = SimSM3Pitch(name="sm3_pitch")
-    mono = SimMonoEnergy(name="mono_energy")
-    cam = SimMarana(name="marana", frame_shape=(2048, 2048))
+    sm3 = SimSM3Pitch(name="sim_sm3_pitch")
+    mono = SimMonoEnergy(name="sim_mono_energy")
+    cam = SimMarana(name="sim_marana", frame_shape=(2048, 2048))
     yield cam, sm3, mono
     state.model, state.axes = old
 
@@ -36,26 +36,26 @@ def test_focus_scan_md_and_events(rig):
     start = next(d for n, d in docs if n == "start")
     rixs = start["rixs"]
     assert rixs["kind"] == "zeroth_order_focus"
-    assert rixs["image_field"] == "marana_image"
-    assert rixs["motor_field"] == "sm3_pitch"
+    assert rixs["image_field"] == "sim_marana_image"
+    assert rixs["motor_field"] == "sim_sm3_pitch"
     assert rixs["frame_shape"] == [2048, 2048]
     assert rixs["mono_energy_ev"] == 850.0
     assert rixs["motor_units"] == ""  # SM3 pitch: native units, no egu
     ev = [d for n, d in docs if n == "event"]
     assert len(ev) == 5
-    assert [e["data"]["sm3_pitch"] for e in ev] == pytest.approx(np.linspace(100, 108, 5))
+    assert [e["data"]["sim_sm3_pitch"] for e in ev] == pytest.approx(np.linspace(100, 108, 5))
     assert cam.cam.acquire_time.get() == 0.5
 
 
 def test_focus_scan_any_motor_sample_x(rig):
     cam, _, mono = rig
-    sx = SimSampleX(name="sample_x")
+    sx = SimSampleX(name="sim_sample_x")
     docs = _run(qerlin_focus_scan(cam, sx, mono, -0.88, -0.76, 3, exposure_s=0.5))
     rixs = next(d for n, d in docs if n == "start")["rixs"]
-    assert rixs["motor_field"] == "sample_x"
+    assert rixs["motor_field"] == "sim_sample_x"
     assert rixs["motor_units"] == "mm"
     ev = [d for n, d in docs if n == "event"]
-    assert [e["data"]["sample_x"] for e in ev] == pytest.approx([-0.88, -0.82, -0.76])
+    assert [e["data"]["sim_sample_x"] for e in ev] == pytest.approx([-0.88, -0.82, -0.76])
 
 
 def test_motor_units_fallbacks():
@@ -117,7 +117,7 @@ def test_plan_plugin_motor_filter_is_any_motor():
     hints = get_type_hints(plan_plugin._qerlin_focus_scan_ui, include_extras=True)
     meta = get_args(hints["motor"])[1:]
     assert DeviceFilter(category="motor") in meta
-    assert any(isinstance(m, DeviceDefault) and m.names == ("sm3_pitch",) for m in meta)
+    assert any(isinstance(m, DeviceDefault) and m.names == ("sim_sm3_pitch",) for m in meta)
 
 
 def test_sim_motors_are_motor_category():
@@ -128,7 +128,7 @@ def test_sim_motors_are_motor_category():
     path = files("lightfall_endstation_602.sim").joinpath("qerlin_happi.json")
     cats = {r.item.name: str(_guess_category(r.item))
             for r in happi.Client(path=str(path)).search()}
-    assert cats["sm3_pitch"] == cats["sample_x"] == "motor"
+    assert cats["sim_sm3_pitch"] == cats["sim_sample_x"] == "motor"
 
 
 def test_focus_scan_without_mono(rig):

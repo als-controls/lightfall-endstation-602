@@ -129,9 +129,9 @@ def _run_plan(writer_client, bridge, cache, publish, timings):
 
     RE.subscribe(tw)
     RE.subscribe(binder)
-    sm3 = SimSM3Pitch(name="sm3_pitch")
-    sx = SimSampleX(name="sample_x")
-    marana = SimMarana(name="marana", frame_shape=FRAME_SHAPE)
+    sm3 = SimSM3Pitch(name="sim_sm3_pitch")
+    sx = SimSampleX(name="sim_sample_x")
+    marana = SimMarana(name="sim_marana", frame_shape=FRAME_SHAPE)
     hooks = OptimizeHooks(
         bridge=bridge, client=cache,
         credentials=lambda: ("http://in-memory", None, None),
@@ -226,12 +226,12 @@ def test_e2e_optimize_2d(nats_server, live_tiled_app, sim_2d):  # noqa: F811
     assert timings["stop_doc"]["exit_status"] == "success", timings["stop_doc"]
     (bind,) = events["bind"]
     assert bind["run_uid"] == uid and bind["detector_name"] == "rixs_score"
-    assert bind["motor_names"] == ["sm3_pitch", "sample_x"]
+    assert bind["motor_names"] == ["sim_sm3_pitch", "sim_sample_x"]
 
     frames = sorted(events["frame"], key=lambda f: f["seq_num"])
     assert [f["seq_num"] for f in frames] == list(range(1, n + 1))
     for f, t in zip(frames, targets):
-        assert [f["positions"]["sm3_pitch"], f["positions"]["sample_x"]] == pytest.approx(t)
+        assert [f["positions"]["sim_sm3_pitch"], f["positions"]["sim_sample_x"]] == pytest.approx(t)
         assert f["score_valid"], f
 
     # What tsuchinoko read after each batch: aligned rows, scores = 1/FWHM of that frame.
@@ -244,10 +244,10 @@ def test_e2e_optimize_2d(nats_server, live_tiled_app, sim_2d):  # noqa: F811
     assert targets[int(np.argmax(last["values"]))] == BEST_TARGET
 
     (done,) = events["complete"]
-    assert done["run_uid"] == uid and done["motor_fields"] == ["sm3_pitch", "sample_x"]
+    assert done["run_uid"] == uid and done["motor_fields"] == ["sim_sm3_pitch", "sim_sample_x"]
     assert done["fit"]["ok"] is False and done["fit"]["reason"] == "multi-motor run: no 1D fit"
     best = done["best_measured"]["positions"]
-    assert [best["sm3_pitch"], best["sample_x"]] == pytest.approx(BEST_TARGET)
+    assert [best["sim_sm3_pitch"], best["sim_sample_x"]] == pytest.approx(BEST_TARGET)
     print(f"\ne2e optimize: plan {timings['plan_done'] - timings['t0']:.1f} s for {n} "
           f"points; best FWHM {done['best_measured']['fwhm_px']:.2f} px at {best}; "
           f"scores {[round(v, 4) for v in last['values']]}")

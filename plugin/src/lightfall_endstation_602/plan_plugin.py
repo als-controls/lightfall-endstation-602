@@ -28,10 +28,10 @@ MONO_CLASS = _cls(SimMonoEnergy)
 
 def _qerlin_focus_scan_ui(
     marana: Annotated[Any, DeviceFilter(name_pattern=MARANA_NAME_PATTERN)],
-    # Any motor; the sim backend tags sm3_pitch and sample_x as motors.
-    motor: Annotated[Any, DeviceFilter(category="motor"), DeviceDefault("sm3_pitch")],
+    # Any motor; the sim backend tags sim_sm3_pitch and sim_sample_x as motors.
+    motor: Annotated[Any, DeviceFilter(category="motor"), DeviceDefault("sim_sm3_pitch")],
     mono: Annotated[Any, DeviceFilter(device_class=MONO_CLASS),
-                    DeviceDefault("mono_energy")] = None,
+                    DeviceDefault("sim_mono_energy")] = None,
     *,
     # No Unit(): start/stop are in the chosen motor's own units.
     start: float = 98.0,
@@ -42,14 +42,15 @@ def _qerlin_focus_scan_ui(
     """Scan one focusing motor and take one Marana frame per point (focus scan).
 
     UNITS: start/stop are in the scanned motor's own units: SM3 pitch
-    (sm3_pitch) in its native units (limits 90..125, typical scan 98-116 step
-    1), Sample X (sample_x) in mm (limits -1.5..0.5, typical span 0.12-0.15
+    (sim_sm3_pitch) in its native units (limits 90..125, typical scan 98-116 step
+    1), Sample X (sim_sample_x) in mm (limits -1.5..0.5, typical span 0.12-0.15
     step 0.01). exposure_s is the Marana exposure in SECONDS. ``num`` is the
     number of points (1-201) and sets how much the scan does versus the agent:
     a large num is a dense scan that leaves little for the agent to do, a small
     num (e.g. 5-9) is a coarse scan the agent refines iteratively. num=1 with
     start == stop is a single confirming exposure. Device args are names:
-    marana, motor (e.g. sm3_pitch or sample_x), mono (optional; it only labels the
+    marana (the real camera "marana" or "sim_marana"), motor (e.g. sim_sm3_pitch or
+    sim_sample_x), mono (optional; it only labels the
     run's mono energy). Each run's start
     document carries the ``rixs`` metadata that the rixs-live service binds on.
     """
@@ -83,9 +84,9 @@ def _qerlin_optimize_ui(
     marana: Annotated[Any, DeviceFilter(name_pattern=MARANA_NAME_PATTERN)],
     # Any motors, in the axes order of tsuchinoko's parameter_bounds.
     motors: Annotated[list[Any], DeviceFilter(category="motor"),
-                      DeviceDefault("sm3_pitch", "sample_x")],
+                      DeviceDefault("sim_sm3_pitch", "sim_sample_x")],
     mono: Annotated[Any, DeviceFilter(device_class=MONO_CLASS),
-                    DeviceDefault("mono_energy")] = None,
+                    DeviceDefault("sim_mono_energy")] = None,
     *,
     exposure_s: Annotated[float, Unit("s")] = 1.0,
     timeout: Annotated[float, Unit("s")] = 300.0,
@@ -95,7 +96,7 @@ def _qerlin_optimize_ui(
 
     Start tsuchinoko and configure it (autonomous_experiment workflow) first; this
     plan then measures the targets it sends. ``motors`` is a list of 1 or more
-    motor names (e.g. ["sm3_pitch", "sample_x"]) in the SAME order as the axes of
+    motor names (e.g. ["sim_sm3_pitch", "sim_sample_x"]) in the SAME order as the axes of
     tsuchinoko's parameter_bounds. Each target takes one Marana frame (the
     ``frames`` stream); rixs-live's FWHM of that frame becomes ``rixs_score`` =
     1/FWHM px (0 when unscorable), which gpCAM maximizes, with ``rixs_fwhm_px``

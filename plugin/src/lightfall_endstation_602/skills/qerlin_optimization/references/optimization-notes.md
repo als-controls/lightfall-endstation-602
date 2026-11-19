@@ -40,8 +40,8 @@ about 15 points per motor:
 
 | Motor | Units | Bounds | Notes |
 |---|---|---|---|
-| `sm3_pitch` | native (as logged) | ~98..116 | lopsided: width grows faster above the optimum |
-| `sample_x` | mm | ~-0.95..-0.65 | its best moves slightly with pitch, which is why a joint 2D search helps |
+| `sim_sm3_pitch` | native (as logged) | ~98..116 | lopsided: width grows faster above the optimum |
+| `sim_sample_x` | mm | ~-0.95..-0.65 | its best moves slightly with pitch, which is why a joint 2D search helps |
 
 ## Tested gpCAM configuration
 

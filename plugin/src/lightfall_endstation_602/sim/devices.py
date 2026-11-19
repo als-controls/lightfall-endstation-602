@@ -20,8 +20,8 @@ from .model import FocusModel, render_frame
 log = logging.getLogger(__name__)
 
 
-SM3_NAME = "sm3_pitch"
-SAMPLE_X_NAME = "sample_x"
+SM3_NAME = "sim_sm3_pitch"
+SAMPLE_X_NAME = "sim_sample_x"
 TRACKED_NAMES = (SM3_NAME, SAMPLE_X_NAME)
 
 
@@ -35,11 +35,11 @@ def _position(obj) -> float | None:
 class AxisTracker:
     """Every live top-level ophyd object named like a focusing motor; picks the moved one.
 
-    SimMarana must follow whichever ``sm3_pitch`` / ``sample_x`` the user actually
-    moves, and that need not be a device this module built: in Lightfall, two
-    backends can offer the same name (the mock backend's SynAxis ``sample_x``
-    wins the catalog name; the happi one is skipped, then built anyway by
-    happi's reconnect pass). So the tracker keeps every candidate by name
+    SimMarana must follow whichever ``sim_sm3_pitch`` / ``sim_sample_x`` the user
+    actually moves, and that need not be a device this module built: in Lightfall,
+    two backends can offer the same name (only one wins the catalog name; the other
+    can still be built by happi's reconnect pass). The ``sim_`` prefix keeps the sim
+    devices clear of real and mock names, but the tracker stays defensive. So the tracker keeps every candidate by name
     (an ophyd instantiation callback, plus one ``gc`` sweep for objects built
     before this module was imported) and, at each frame, uses the candidate whose
     position changed most recently; until one moves, the newest Sim* instance.
@@ -216,7 +216,7 @@ class SimMaranaCam(Device):
 class SimMarana(Device):
     """Marana-like 2D detector; frame width depends on current SM3 pitch and Sample X.
 
-    The motors are found by name (``sm3_pitch``, ``sample_x``) at each trigger,
+    The motors are found by name (``sim_sm3_pitch``, ``sim_sample_x``) at each trigger,
     through :class:`AxisTracker`, not handed in. Exposure is ``cam.acquire_time``,
     as on the real Marana, so the same plans drive both.
     """

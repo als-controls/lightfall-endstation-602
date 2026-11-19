@@ -1,6 +1,6 @@
 {
-    "sm3_pitch": {
-        "_id": "sm3_pitch",
+    "sim_sm3_pitch": {
+        "_id": "sim_sm3_pitch",
         "active": true,
         "args": [],
         "creation": "Fri Oct 30 00:00:00 2026",
@@ -11,12 +11,12 @@
             "name": "{{name}}"
         },
         "last_edit": "Fri Oct 30 00:00:00 2026",
-        "name": "sm3_pitch",
+        "name": "sim_sm3_pitch",
         "prefix": "QERLIN:SIM:sm3_pitch",
         "type": "OphydItem"
     },
-    "sample_x": {
-        "_id": "sample_x",
+    "sim_sample_x": {
+        "_id": "sim_sample_x",
         "active": true,
         "args": [],
         "creation": "Fri Oct 30 00:00:00 2026",
@@ -27,12 +27,12 @@
             "name": "{{name}}"
         },
         "last_edit": "Fri Oct 30 00:00:00 2026",
-        "name": "sample_x",
+        "name": "sim_sample_x",
         "prefix": "QERLIN:SIM:sample_x",
         "type": "OphydItem"
     },
-    "mono_energy": {
-        "_id": "mono_energy",
+    "sim_mono_energy": {
+        "_id": "sim_mono_energy",
         "active": true,
         "args": [],
         "creation": "Fri Oct 30 00:00:00 2026",
@@ -43,12 +43,12 @@
             "name": "{{name}}"
         },
         "last_edit": "Fri Oct 30 00:00:00 2026",
-        "name": "mono_energy",
+        "name": "sim_mono_energy",
         "prefix": "QERLIN:SIM:mono_energy",
         "type": "OphydItem"
     },
-    "marana": {
-        "_id": "marana",
+    "sim_marana": {
+        "_id": "sim_marana",
         "active": true,
         "args": [],
         "creation": "Fri Oct 30 00:00:00 2026",
@@ -58,7 +58,7 @@
             "name": "{{name}}"
         },
         "last_edit": "Fri Oct 30 00:00:00 2026",
-        "name": "marana",
+        "name": "sim_marana",
         "prefix": "QERLIN:SIM:marana",
         "type": "OphydItem"
     }
