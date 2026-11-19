@@ -21,7 +21,10 @@ RPC_BIND, RPC_STOP, RPC_RESULT = "run.bind", "run.stop", "result.get"
 #   tiled_proxy is the proxy Lightfall itself uses for tiled_url (e.g.
 #   "socks5://localhost:1080") or None. The analysis runs in the background.
 #   The Tiled API key is not sent: rixs-live gets it from Lightfall's own trust
-#   handshake (auth.request), which the user approves.
+#   handshake (auth.request), which the user approves. Optional lightfall_session
+#   is an opaque id of Lightfall's login session; that key is bound to the session
+#   (revoked when it ends), so rixs-live re-runs the handshake whenever the id
+#   differs from the session its cached key came from.
 # run.stop: {run_uid, exit_status?, num_events?} -> {"accepted": true}
 # result.get: {run_uid} -> {"result": <complete payload> | None} while finished or
 #   unknown, or {"pending": true, run_uid, frames_done, total} while bound or draining.

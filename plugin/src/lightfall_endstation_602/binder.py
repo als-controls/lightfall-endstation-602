@@ -31,6 +31,30 @@ def _default_credentials():
     return tiled_url, None, None
 
 
+def _default_session_marker() -> str | None:
+    """Opaque id of Lightfall's current login session, or None without one.
+
+    Lightfall's Tiled API key belongs to the login session (it is revoked when the
+    session ends), so rixs-live re-runs its auth handshake whenever this changes.
+    A hash of user + session start time + pid: it identifies the session without
+    carrying anything secret or personal.
+    """
+    try:
+        import hashlib
+        import os
+
+        from lightfall.auth.session import SessionManager
+        session = SessionManager.get_instance().session
+        if session is None:
+            return None
+        sub = (getattr(session.user, "attributes", None) or {}).get("sub") or ""
+        raw = f"{sub}|{session.created_at.isoformat()}|{os.getpid()}"
+        return hashlib.sha256(raw.encode()).hexdigest()[:16]
+    except Exception as ex:
+        logger.debug(f"lightfall session lookup failed: {ex!r}")
+        return None
+
+
 def _default_proxy(tiled_url: str) -> str | None:
     """The proxy Lightfall's TiledService would use for ``tiled_url``, else None.
 
@@ -56,11 +80,13 @@ class RixsRunBinder:
         run_engine_getter: Callable = _default_run_engine,
         credentials_getter: Callable = _default_credentials,
         proxy_getter: Callable[[str], str | None] = _default_proxy,
+        session_getter: Callable[[], str | None] = _default_session_marker,
     ) -> None:
         self._client = client
         self._get_re = run_engine_getter
         self._get_creds = credentials_getter
         self._get_proxy = proxy_getter
+        self._get_session = session_getter
         self._token = None
         self._re = None
         self._bound_uid: str | None = None
@@ -117,7 +143,13 @@ class RixsRunBinder:
                 except Exception as ex:
                     logger.debug(f"tiled proxy lookup failed: {ex!r}")
                     proxy = None
-                self._client.bind_run(uid, tiled_url=tiled_url, tiled_proxy=proxy)
+                try:
+                    lf_session = self._get_session()
+                except Exception as ex:
+                    logger.debug(f"lightfall session lookup failed: {ex!r}")
+                    lf_session = None
+                self._client.bind_run(uid, tiled_url=tiled_url, tiled_proxy=proxy,
+                                      lightfall_session=lf_session)
                 self._bound_uid = uid
                 self._client.last_bound_uid = uid
             elif name == "stop":

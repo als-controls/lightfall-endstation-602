@@ -288,16 +288,22 @@ class RixsServiceClient(QObject):
         return reply.get("result")
 
     def bind_run(self, run_uid: str, tiled_url: str = "",
-                 tiled_proxy: str | None = None, **_ignored) -> None:
+                 tiled_proxy: str | None = None,
+                 lightfall_session: str | None = None, **_ignored) -> None:
         """Ask rixs-live to analyse ``run_uid`` (non-blocking ``run.bind`` rpc).
 
         ``tiled_proxy`` is the proxy Lightfall uses for ``tiled_url`` (or None), so the
         service reaches the same Tiled without configuring the proxy twice. The Tiled
         key is never sent: rixs-live gets it from Lightfall's trust handshake.
+        ``lightfall_session`` (opaque, optional) tells rixs-live which Lightfall login
+        session the run belongs to, so it re-handshakes when the session (and with
+        it the session-bound Tiled key) has changed.
         """
         payload = {"run_uid": run_uid, "tiled_url": tiled_url,
                    "tiled_proxy": tiled_proxy or None,
                    "contract_version": c.CONTRACT_VERSION}
+        if lightfall_session:
+            payload["lightfall_session"] = lightfall_session
         fut = self._call(c.RPC_BIND, payload)
         if fut is not None:
             self._report_failure(c.RPC_BIND, run_uid, fut)

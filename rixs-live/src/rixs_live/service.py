@@ -69,6 +69,9 @@ class RixsLiveService:
         self._pva_context = None
         self._pva_buffers: dict[str, PvaFrameBuffer] = {}
         self._warned_bind_key = False
+        # Lightfall login session the cached Tiled key belongs to (None: unknown, e.g.
+        # the startup handshake, which predates any bind).
+        self._auth_session: str | None = None
         self._poll_task: asyncio.Task | None = None
         # dict: run_uid, session, reader, info, total, next, frames (per-frame payloads),
         # stop (Event)
@@ -214,6 +217,7 @@ class RixsLiveService:
     async def _on_reconnected(self) -> None:
         # The host's subscriptions are replayed by nats-py; the Tiled credentials came from
         # a handshake on the old connection, so refresh them (kept until replaced).
+        self._auth_session = None
         asyncio.get_running_loop().create_task(self._authenticate_bg())
 
     async def _authenticate_bg(self) -> None:
@@ -231,6 +235,21 @@ class RixsLiveService:
         if run_uid and (run_uid in self._binding or run_uid in self._pending_stops):
             return {"pending": True, "run_uid": run_uid, "frames_done": 0, "total": None}
         return None
+
+    async def _refresh_credentials_for_session(self, data: dict) -> None:
+        """Re-run the auth handshake when the bind comes from a new Lightfall session.
+
+        Lightfall's Tiled key is bound to its login session and revoked when that
+        session ends (logout, restart), so a key cached from an earlier session gets
+        401 "Invalid API key". The bind only names the session; the key itself still
+        comes from the handshake alone.
+        """
+        marker = data.get("lightfall_session")
+        if not isinstance(marker, str) or not marker or marker == self._auth_session:
+            return
+        logger.info("bind from a new Lightfall session; re-authenticating for its Tiled key")
+        if await self._nats.authenticate() is not None:
+            self._auth_session = marker
 
     def _resolve_credentials(self, data: dict) -> tuple[str, str | None]:
         """URL: bind, then cached auth, then config. Key: never from the bind.
@@ -288,6 +307,7 @@ class RixsLiveService:
             if version != CONTRACT_VERSION:
                 raise ValueError(
                     f"contract_version {version} != {CONTRACT_VERSION}; refusing bind")
+            await self._refresh_credentials_for_session(data)
             url, key = self._resolve_credentials(data)
             proxy = data.get("tiled_proxy")
             proxy = proxy if isinstance(proxy, str) and proxy else None
