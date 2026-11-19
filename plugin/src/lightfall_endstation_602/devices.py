@@ -20,6 +20,7 @@ from ophyd import (
     StatsPlugin,
 )
 from ophyd.areadetector.base import ADComponent as C
+from ophyd.areadetector.base import EpicsSignalWithRBV
 from ophyd.areadetector.cam import Andor3DetectorCam
 from ophyd.areadetector.plugins import PluginBase
 from ophyd.areadetector.filestore_mixins import (
@@ -76,6 +77,10 @@ class MaranaHDF5Plugin(HDF5Plugin, FileStoreHDF5IterativeWrite):
     # Negative N: the IOC may create up to |N| missing trailing directories.
     CREATE_DIRECTORY_DEPTH = -5
     path_semantics = "posix"
+
+    # ophyd declares CreateDirectory only on its versioned FilePlugin_V22+ classes,
+    # not on the plain HDF5Plugin this subclasses; the IOC (ADCore 3.14) has it.
+    create_directory = C(EpicsSignalWithRBV, "CreateDirectory", kind="config")
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
