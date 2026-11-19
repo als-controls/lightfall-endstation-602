@@ -170,3 +170,17 @@ def test_sim_marana_keeps_its_frames_in_tiled():
 
 def test_array_counter_is_read_fresh_not_from_the_monitor_cache():
     assert Marana.array_counter.kwargs.get("auto_monitor") is False
+
+
+def test_every_stage_sig_resolves_to_a_component(monkeypatch):
+    """Staging resolves each stage_sigs key with getattr; a missing component only
+    fails at stage time on the real IOC (it did, for create_directory)."""
+    _set_beamline(monkeypatch, "6.0.2")
+    dev = _marana()
+    for owner in (dev, dev.cam, dev.hdf1, dev.pva1, dev.stats1, dev.image1):
+        for key in owner.stage_sigs:
+            if isinstance(key, str):
+                obj = owner
+                for part in key.split("."):
+                    obj = getattr(obj, part)  # raises AttributeError if missing
+    assert type(dev.hdf1).create_directory.suffix == "CreateDirectory"
