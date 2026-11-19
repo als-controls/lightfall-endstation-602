@@ -6,7 +6,7 @@ import pytest
 import tiled.client.context as context_mod
 
 from rixs_live.config import AppConfig
-from rixs_live.contract import CONTRACT_VERSION, SUBJ_ERROR
+from rixs_live.contract import CONTRACT_VERSION, EVT_ERROR
 from rixs_live.service import RixsLiveService
 from rixs_live.tiled_io import connect_tiled, redact_proxy
 
@@ -97,18 +97,19 @@ class FakeNats:
         self.published = []
         self.tiled_credentials = None
 
-    async def publish(self, subject, payload):
-        self.published.append((subject, payload))
+    async def emit(self, session, name, payload):
+        self.published.append((name, payload))
 
 
 def _bind(**over):
-    return {"run_uid": "r1", "tiled_url": TARGET, "lightfall_prefix": "als.7011",
-            "contract_version": CONTRACT_VERSION, **over}
+    return {"run_uid": "r1", "tiled_url": TARGET, "contract_version": CONTRACT_VERSION,
+            **over}
 
 
 def _service(connect):
-    return RixsLiveService(AppConfig(bind_lookup_timeout_s=0.1), nats_client=FakeNats(),
-                           tiled_connect=connect)
+    fake = FakeNats()
+    return RixsLiveService(AppConfig(bind_lookup_timeout_s=0.1), nats_client=fake,
+                           emit=fake.emit, tiled_connect=connect)
 
 
 async def test_bind_passes_tiled_proxy_to_client():
@@ -141,7 +142,7 @@ async def test_connect_failure_error_names_url_and_proxy(no_env_proxy, monkeypat
     svc = _service(connect)
     await svc._handle_bind(_bind(tiled_proxy=proxy), None)
     ((subject, payload),) = svc._nats.published
-    assert subject == SUBJ_ERROR and payload["run_uid"] == "r1"
+    assert subject == EVT_ERROR and payload["run_uid"] == "r1"
     err = payload["error"]
     assert f"Tiled at {TARGET}" in err and expect in err
     assert "TimeoutError" in err and "Check the proxy" in err

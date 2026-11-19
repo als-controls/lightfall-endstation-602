@@ -4,8 +4,9 @@ from lightfall_endstation_602 import runtime
 def test_singletons_and_ensure(monkeypatch):
     monkeypatch.setattr(runtime, "_client", None)
     monkeypatch.setattr(runtime, "_binder", None)
+    from conftest import FakeService
     from lightfall_endstation_602.client import RixsServiceClient
-    monkeypatch.setattr(runtime, "RixsServiceClient", lambda: RixsServiceClient(ipc=None))
+    monkeypatch.setattr(runtime, "RixsServiceClient", lambda: RixsServiceClient(service=FakeService()))
     cl = runtime.get_client()
     assert runtime.get_client() is cl
     b = runtime.get_binder()

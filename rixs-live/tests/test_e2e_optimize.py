@@ -24,17 +24,19 @@ from lightfall_endstation_602.sim.devices import (
     AxisTracker, SimMarana, SimSampleX, SimSM3Pitch, get_sim_state,
 )
 from lightfall_endstation_602.sim.model import FocusModel
-from test_e2e_smoke import _nats_binary, live_tiled_app, nats_server  # noqa: F401
+from svc_session import SvcSession
+from test_e2e_smoke import (  # noqa: F401
+    _nats_binary, live_tiled_app, nats_server, start_service, stop_service)
 from tiled.client import Context, from_context
 
 from rixs_live.config import AppConfig
 from rixs_live.contract import (
     CONTRACT_VERSION,
-    SUBJ_BIND,
-    SUBJ_COMPLETE,
-    SUBJ_ERROR,
-    SUBJ_FRAME,
-    SUBJ_STOP,
+    EVT_COMPLETE,
+    EVT_ERROR,
+    EVT_FRAME,
+    RPC_BIND,
+    RPC_STOP,
 )
 from rixs_live.service import RixsLiveService
 
@@ -97,17 +99,17 @@ class ThreadBridge:
 
 
 class ScoreCache:
-    """RixsServiceClient's score cache, fed from rixs.zeroth.frame (thread-safe dict ops)."""
+    """RixsServiceClient's score cache, read from the session's frame events."""
 
-    def __init__(self):
-        self.scores = {}
-
-    async def on_frame(self, msg):
-        d = json.loads(msg.data)
-        self.scores[(d["run_uid"], int(d["seq_num"]))] = d
+    def __init__(self, session):
+        self.session = session
 
     def get_score(self, run_uid, seq_num):
-        return self.scores.get((run_uid, int(seq_num)))
+        for d in list(self.session.events):
+            if d[0] == EVT_FRAME and (d[1]["run_uid"], int(d[1]["seq_num"])) == (
+                    run_uid, int(seq_num)):
+                return d[1]
+        return None
 
 
 def _run_plan(writer_client, bridge, cache, publish, timings):
@@ -117,12 +119,11 @@ def _run_plan(writer_client, bridge, cache, publish, timings):
 
     def binder(name, doc):  # after the writer: the doc is already in Tiled
         if name == "start" and "rixs" in doc:
-            publish(SUBJ_BIND, {"run_uid": doc["uid"], "tiled_url": "http://in-memory",
-                                "lightfall_prefix": PREFIX, "tiled_proxy": None,
-                                "contract_version": CONTRACT_VERSION})
+            publish(RPC_BIND, {"run_uid": doc["uid"], "tiled_url": "http://in-memory",
+                               "tiled_proxy": None, "contract_version": CONTRACT_VERSION})
         elif name == "stop":
             timings["stop_doc"] = doc
-            publish(SUBJ_STOP, {"run_uid": doc["run_start"],
+            publish(RPC_STOP, {"run_uid": doc["run_start"],
                                 "exit_status": doc.get("exit_status"),
                                 "num_events": doc.get("num_events")})
 
@@ -149,24 +150,15 @@ async def _e2e(nats_url, tiled_app):
         cfg.nats.url = nats_url
         cfg.nats.lightfall_prefix = PREFIX
         svc = RixsLiveService(cfg, tiled_connect=lambda url, key, proxy=None: client)
-        await svc._nats.connect()
-        await svc._register_subscriptions()
+        await start_service(svc)
+        session = SvcSession(nats_url, PREFIX)
+        await session.start()
 
         loop = asyncio.get_running_loop()
         nc = await natslib.connect(nats_url)        # the plan's (Lightfall's) connection
         tsu = await natslib.connect(nats_url)       # the fake tsuchinoko's
-        cache = ScoreCache()
-        events = {"frame": [], "complete": [], "error": [], "reads": [], "bind": []}
-
-        def collector(key):
-            async def cb(msg):
-                events[key].append(json.loads(msg.data))
-            return cb
-
-        await nc.subscribe(SUBJ_FRAME, cb=cache.on_frame)
-        await nc.subscribe(SUBJ_FRAME, cb=collector("frame"))
-        await nc.subscribe(SUBJ_COMPLETE, cb=collector("complete"))
-        await nc.subscribe(SUBJ_ERROR, cb=collector("error"))
+        cache = ScoreCache(session)
+        events = {"reads": [], "bind": []}
 
         # -- fake tsuchinoko: targets out, measured in, TiledReader-style read back.
         tsu_state = {"batch": 0, "measured": 0, "sent": 0}
@@ -201,9 +193,10 @@ async def _e2e(nats_url, tiled_app):
         await nc.flush()
         await tsu.flush()
 
-        def publish(subject, payload):
-            asyncio.run_coroutine_threadsafe(
-                nc.publish(subject, json.dumps(payload).encode()), loop).result(timeout=10)
+        def publish(action, payload):
+            reply = asyncio.run_coroutine_threadsafe(
+                session.call(action, payload), loop).result(timeout=10)
+            assert reply.get("status") == "ok" and reply.get("accepted"), reply
 
         timings = {"t0": time.monotonic()}
         bridge = ThreadBridge(nc, loop)
@@ -211,12 +204,16 @@ async def _e2e(nats_url, tiled_app):
                                          timings)
         timings["plan_done"] = time.monotonic()
         deadline = time.monotonic() + DONE_TIMEOUT_S
-        while time.monotonic() < deadline and not events["complete"] and not events["error"]:
+        while (time.monotonic() < deadline and not session.on(EVT_COMPLETE)
+               and not session.on(EVT_ERROR)):
             await asyncio.sleep(0.1)
         primary = await loop.run_in_executor(None, lambda: client[uid]["primary"].read())
+        events.update(frame=session.on(EVT_FRAME), complete=session.on(EVT_COMPLETE),
+                      error=session.on(EVT_ERROR))
         await tsu.drain()
         await nc.drain()
-        await svc._nats.close()
+        await session.close()
+        await stop_service(svc)
     return uid, events, timings, primary
 
 

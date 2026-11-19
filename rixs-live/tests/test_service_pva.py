@@ -12,7 +12,7 @@ from test_service import (
 )
 
 from rixs_live.config import AppConfig, load_config
-from rixs_live.contract import SUBJ_COMPLETE, SUBJ_ERROR, SUBJ_FRAME
+from rixs_live.contract import EVT_COMPLETE, EVT_ERROR, EVT_FRAME
 from rixs_live.service import RixsLiveService
 
 SHAPE = (6, 8)
@@ -36,10 +36,11 @@ def _service(ctx, **cfg_over):
     cfg = AppConfig(**{"poll_interval_s": 0.01, "bind_lookup_timeout_s": 0.3,
                        "drain_settle_s": 0.2, "drain_timeout_s": 2.0, **cfg_over})
     tiled = FakeTiled()
-    svc = RixsLiveService(cfg, nats_client=FakeNats(),
+    fake = FakeNats()
+    svc = RixsLiveService(cfg, nats_client=fake, emit=fake.emit,
                           tiled_connect=lambda url, key, proxy=None: tiled,
                           pva_context_factory=lambda: ctx)
-    return svc, svc._nats, tiled
+    return svc, fake, tiled
 
 
 def _add_pva_run(tiled, uid, positions, counters):
@@ -67,15 +68,15 @@ async def test_pva_run_scores_frames_from_the_channel(stub_score):  # noqa: F811
     for k, (uid, width) in enumerate([(21, 5), (22, 4), (23, 6)], start=1):
         ctx.post(CHANNEL, ntnd(_frame(width), uid, stamp=1_700_000_000.0 + k))
         stream.visible = k
-        await _until(lambda k=k: len(nats.on(SUBJ_FRAME)) == k)
-    frames = nats.on(SUBJ_FRAME)
+        await _until(lambda k=k: len(nats.on(EVT_FRAME)) == k)
+    frames = nats.on(EVT_FRAME)
     assert [(f["seq_num"], f["position"], f["fwhm_px"]) for f in frames] == [
         (1, 1.0, 5.0), (2, 2.0, 4.0), (3, 3.0, 6.0)]
     await svc._handle_stop({"run_uid": "runP", "exit_status": "success",
                                          "num_events": {"primary": 3}}, None)
-    (done,) = nats.on(SUBJ_COMPLETE)
+    (done,) = nats.on(EVT_COMPLETE)
     assert done["best_measured"] == {"position": 2.0, "fwhm_px": 4.0}
-    assert not nats.on(SUBJ_ERROR)
+    assert not nats.on(EVT_ERROR)
 
 
 async def test_configured_channels_are_monitored_before_any_bind(stub_score):  # noqa: F811
@@ -87,8 +88,8 @@ async def test_configured_channels_are_monitored_before_any_bind(stub_score):  #
     stream = _add_pva_run(tiled, "runQ", [7.0], counters=[31])
     stream.visible = 1
     await svc._handle_bind(_bind("runQ"), None)
-    await _until(lambda: len(nats.on(SUBJ_FRAME)) == 1)
-    assert nats.on(SUBJ_FRAME)[0]["fwhm_px"] == 3.0
+    await _until(lambda: len(nats.on(EVT_FRAME)) == 1)
+    assert nats.on(EVT_FRAME)[0]["fwhm_px"] == 3.0
     await svc.wait_idle()
     svc.close_pva()
     assert ctx.sub.closed
@@ -100,8 +101,8 @@ async def test_missing_frame_is_a_loud_error(stub_score):  # noqa: F811
     stream = _add_pva_run(tiled, "runR", [1.0], counters=[41])
     stream.visible = 1
     await svc._handle_bind(_bind("runR"), None)
-    await _until(lambda: nats.on(SUBJ_ERROR))
-    (err,) = nats.on(SUBJ_ERROR)
+    await _until(lambda: nats.on(EVT_ERROR))
+    (err,) = nats.on(EVT_ERROR)
     assert err["run_uid"] == "runR" and "uniqueId 41" in err["error"]
     assert CHANNEL in err["error"] and not svc.busy
 

@@ -10,6 +10,9 @@ class NatsConfig(BaseModel):
     tls_ca: str | None = None
     tls_insecure: bool = False
     lightfall_prefix: str = "als.7011"
+    # ServiceHost scope; "" = lightfall_prefix (Lightfall resolves the service at
+    # {ipc_topic_prefix}.svc.rixs-live, so the two must agree).
+    scope: str = ""
     app_name: str = "rixs-live"
     app_version: str = ""
     auth_timeout: float = 70.0  # > 60s Lightfall trust-dialog timeout
@@ -40,7 +43,7 @@ class AppConfig(BaseModel):
     poll_interval_s: float = 0.5
     # Spectrometer dispersion; 0.0 means unknown -> fwhm_mev and resolving power are null.
     dispersion_mev_per_px: float = 0.0
-    # Completed scan payloads kept for SUBJ_RESULT requests (oldest evicted).
+    # Completed scan payloads kept for result.get rpcs (oldest evicted).
     keep_results: int = 20
     # Lightfall's writer is asynchronous (a queue drained by a thread), so a bind can
     # arrive before the run exists in Tiled and a stop before the last events land.

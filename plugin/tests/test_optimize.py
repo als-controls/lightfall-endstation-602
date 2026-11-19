@@ -275,13 +275,13 @@ def test_score_of():
     assert score_of({"fwhm_px": float("nan"), "score_valid": True})[0] == 0.0
 
 
-def test_binder_binds_optimize_run(rig, fake_ipc):
+def test_binder_binds_optimize_run(rig, fake_svc):
     """The start doc's rixs key makes the binder bind the run; the stop doc stops it."""
-    client = RixsServiceClient(ipc=fake_ipc)
+    client = RixsServiceClient(service=fake_svc)
     re = MagicMock()
     binder = RixsRunBinder(client, run_engine_getter=lambda: re,
                            credentials_getter=lambda: ("http://t", None, None),
-                           prefix_getter=lambda: "als.602", proxy_getter=lambda url: None)
+                           proxy_getter=lambda url: None)
     binder.enable()
     on_doc = re.subscribe.call_args[0][0]
     motors = rig.motors[:2]
@@ -291,10 +291,10 @@ def test_binder_binds_optimize_run(rig, fake_ipc):
     for name, doc in docs:
         on_doc(name, doc)
     uid = next(d for k, d in docs if k == "start")["uid"]
-    subjects = [s for s, _ in fake_ipc.published]
-    assert subjects == [c.SUBJ_BIND, c.SUBJ_STOP]
-    assert fake_ipc.published[0][1]["run_uid"] == uid
-    assert fake_ipc.published[1][1]["num_events"] == {"frames": 1, "primary": 1}
+    subjects = [s for s, _ in fake_svc.calls]
+    assert subjects == [c.RPC_BIND, c.RPC_STOP]
+    assert fake_svc.calls[0][1]["run_uid"] == uid
+    assert fake_svc.calls[1][1]["num_events"] == {"frames": 1, "primary": 1}
 
 
 def test_lightfall_hooks_require_enabled_binder(monkeypatch):
@@ -311,13 +311,13 @@ def test_lightfall_hooks_require_enabled_binder(monkeypatch):
         optimize.lightfall_hooks()
 
 
-def test_lightfall_hooks_wire_lightfall(monkeypatch, fake_ipc):
+def test_lightfall_hooks_wire_lightfall(monkeypatch, fake_ipc, fake_svc):
     import lightfall.ipc.service as ipc_service
     from lightfall.acquire.nats_bridge import NATSPlanBridge
     from lightfall.acquire.plans import adaptive
 
     from lightfall_endstation_602 import runtime
-    client = RixsServiceClient(ipc=fake_ipc)
+    client = RixsServiceClient(service=fake_svc)
     monkeypatch.setattr(ipc_service, "get_ipc_service", lambda: fake_ipc)
     monkeypatch.setattr(runtime, "_client", client)
     monkeypatch.setattr(runtime, "_binder", SimpleNamespace(enabled=True))
@@ -350,9 +350,9 @@ def test_plan_plugin_registers_optimize():
     assert get_plan_ui_class(fn) is AdaptiveExperimentPanel
 
 
-def test_frame_seq_matches_point_index_with_real_score_cache(rig, fake_ipc):
+def test_frame_seq_matches_point_index_with_real_score_cache(rig, fake_svc):
     """The real client's cache, filled as rixs-live would (by run uid + seq_num)."""
-    client = RixsServiceClient(ipc=fake_ipc)
+    client = RixsServiceClient(service=fake_svc)
     motors = rig.motors[:2]
     targets = [[104.0, -0.8], [100.0, -0.9]]
     real = FakeScores(motors)
@@ -363,7 +363,7 @@ def test_frame_seq_matches_point_index_with_real_score_cache(rig, fake_ipc):
         def get_score(self, run_uid, seq_num):
             if client.get_score(run_uid, seq_num) is None:
                 d = real.get_score(run_uid, seq_num)
-                fake_ipc.emit(c.SUBJ_FRAME, {**d, "preview": {"b64": "x"}})
+                fake_svc.emit(c.EVT_FRAME, {**d, "preview": {"b64": "x"}})
             return client.get_score(run_uid, seq_num)
 
     docs = _run(qerlin_optimize(rig.cam, motors, None, timeout=0.1, poll_interval=0.01,

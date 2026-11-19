@@ -1,14 +1,17 @@
-"""Raw nats-py client: connect, Lightfall auth handshake, JSON pub/sub.
+"""rixs-live's broker connection: connect, reconnect forever, Lightfall auth handshake.
 
-Subjects are passed verbatim — the rixs.* namespace is unprefixed on the bus
-(XPCS convention). lightfall_prefix is used for the {prefix}.meta.actions
-discovery request, which advertises the private root; the auth handshake
-itself then goes to {priv_root}.auth.request.
+The connection carries a per-connection capability (token + inbox prefix), so the
+broker's auth callout grants it a private ``_PRIV.<p>`` root. The service's
+:class:`~rixs_live.svc.host.ServiceHost` runs on it through :attr:`NatsClient.core`.
+
+As a *client* of Lightfall, the service also asks Lightfall for Tiled credentials:
+``lightfall_prefix`` names Lightfall's ``{prefix}.meta.actions`` discovery request,
+which advertises Lightfall's private root; the auth handshake (which the user
+approves in Lightfall's trust dialog) then goes to ``{priv_root}.auth.request``.
 """
 from __future__ import annotations
 
 import asyncio
-import json
 import ssl
 from typing import Awaitable, Callable
 
@@ -17,10 +20,28 @@ from loguru import logger
 
 from rixs_live.config import NatsConfig
 from rixs_live.nats_capability import (
+    ConnectionCapability,
     PrivateRootUnavailable,
     new_capability,
     private_auth_request,
 )
+from rixs_live.svc.core import NatsCore
+
+
+class ServiceCore(NatsCore):
+    """A :class:`NatsCore` over a connection :class:`NatsClient` already made.
+
+    The vendored ``NatsCore.connect`` has no connect timeout, reconnect wait or error
+    callback, and the vendored file must not be edited; so NatsClient connects with
+    its own options and the host gets this view of that same connection.
+    """
+
+    def __init__(self, url: str, capability: ConnectionCapability, nc) -> None:
+        super().__init__(url, capability=capability)
+        self._nc = nc
+
+    async def connect(self) -> None:  # already connected by NatsClient
+        return None
 
 
 class NatsClient:
@@ -28,6 +49,7 @@ class NatsClient:
         self._config = config
         self._nc = None
         self._cap = new_capability()
+        self.core: ServiceCore | None = None  # set by connect()
         self.tiled_credentials: dict | None = None
         # Set by closed_cb: the connection gave up for good (or was closed).
         self.closed = asyncio.Event()
@@ -85,6 +107,7 @@ class NatsClient:
         if tls is not None:
             kwargs["tls"] = tls
         self._nc = await nats.connect(self._config.url, **kwargs)
+        self.core = ServiceCore(self._config.url, self._cap, self._nc)
         logger.info(f"connected to NATS at {self._config.url}")
 
     async def close(self) -> None:
@@ -117,21 +140,3 @@ class NatsClient:
         }
         logger.info("auth approved; Tiled credentials cached")
         return self.tiled_credentials
-
-    async def publish(self, subject: str, payload: dict) -> None:
-        await self._nc.publish(subject, json.dumps(payload).encode())
-
-    async def subscribe(self, subject: str, cb) -> None:
-        async def handler(msg):
-            try:
-                data = json.loads(msg.data) if msg.data else {}
-            except json.JSONDecodeError:
-                logger.warning(f"non-JSON message on {msg.subject}; dropped")
-                return
-            await cb(data, msg)
-
-        await self._nc.subscribe(subject, cb=handler)
-
-    async def reply(self, msg, payload: dict) -> None:
-        if getattr(msg, "reply", None):
-            await self._nc.publish(msg.reply, json.dumps(payload).encode())

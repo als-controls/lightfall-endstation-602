@@ -55,10 +55,12 @@ def test_parse_bad_version_raises():
         parse_start_rixs("u1", _doc(frame_shape=[5]))
 
 
-def test_subjects_match_plugin():
-    names = [n for n in dir(contract) if n.startswith("SUBJ_")] + ["MD_KEY", "CONTRACT_VERSION"]
-    assert len([n for n in names if n.startswith("SUBJ_")]) == 8
+def test_service_names_match_plugin():
+    prefixes = ("RPC_", "EVT_", "SERVICE_")
+    names = [n for n in dir(contract) if n.startswith(prefixes)] + ["MD_KEY", "CONTRACT_VERSION"]
+    assert len([n for n in names if n.startswith(prefixes)]) == 9
     assert contract.CONTRACT_VERSION == 2
+    assert not [n for n in dir(contract) if n.startswith("SUBJ_")]  # no public subjects
     for n in names:
         assert getattr(contract, n) == getattr(plugin_contract, n), n
 

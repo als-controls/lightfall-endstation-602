@@ -18,14 +18,14 @@ def _frame(pos, fwhm, valid=True, reason=None, preview=None, centroid=None, angl
 
 
 @pytest.fixture
-def panel(qtbot, fake_ipc):
-    fake_ipc.replies[c.SUBJ_DISCOVER] = {"app_name": "rixs-live"}  # healthy service
-    client = RixsServiceClient(ipc=fake_ipc)
+def panel(qtbot, fake_svc):
+    fake_svc.set_health("up")  # healthy service
+    client = RixsServiceClient(service=fake_svc)
     binder = MagicMock()
     binder.enabled = False
     p = QerlinFocusPanel(client=client, binder=binder)
     qtbot.addWidget(p)
-    p.test_ipc = fake_ipc
+    p.test_ipc = fake_svc
     p.test_binder = binder
     return p
 
@@ -45,11 +45,11 @@ def test_toggle_checked_and_binder_enabled_on_construction(panel):
     panel.test_binder.disable.assert_called_once()
 
 
-def test_construction_retries_until_run_engine_exists(qtbot, fake_ipc):
+def test_construction_retries_until_run_engine_exists(qtbot, up_svc):
     binder = MagicMock()
     binder.enabled = False
     binder.enable.side_effect = [RuntimeError("no RE"), RuntimeError("no RE"), None]
-    p = QerlinFocusPanel(client=RixsServiceClient(ipc=fake_ipc), binder=binder)
+    p = QerlinFocusPanel(client=RixsServiceClient(service=up_svc), binder=binder)
     qtbot.addWidget(p)
     assert p._enable_toggle.isChecked() is True  # stays armed
     assert "waiting for RunEngine" in p._status_label.text()
@@ -62,11 +62,11 @@ def test_construction_retries_until_run_engine_exists(qtbot, fake_ipc):
     assert p._enable_toggle.isChecked() is True
 
 
-def test_unchecking_stops_retry(qtbot, fake_ipc):
+def test_unchecking_stops_retry(qtbot, fake_svc):
     binder = MagicMock()
     binder.enabled = False
     binder.enable.side_effect = RuntimeError("no RE")
-    p = QerlinFocusPanel(client=RixsServiceClient(ipc=fake_ipc), binder=binder)
+    p = QerlinFocusPanel(client=RixsServiceClient(service=fake_svc), binder=binder)
     qtbot.addWidget(p)
     p._enable_toggle.setChecked(False)
     assert not p._retry_timer.isActive()
@@ -82,8 +82,8 @@ def test_toggle_rollback_on_error(panel):
 
 def test_frame_events_add_points(panel):
     for pos, fw in [(-1.0, 9.0), (0.0, 4.0), (1.0, 8.0)]:
-        panel.test_ipc.emit(c.SUBJ_FRAME, _frame(pos, fw))
-    panel.test_ipc.emit(c.SUBJ_FRAME, _frame(0.5, None, valid=False, reason="no peak found"))
+        panel.test_ipc.emit(c.EVT_FRAME, _frame(pos, fw))
+    panel.test_ipc.emit(c.EVT_FRAME, _frame(0.5, None, valid=False, reason="no peak found"))
     xs, ys = panel._scatter.getData()
     assert list(xs) == [-1.0, 0.0, 1.0]
     assert list(ys) == [9.0, 4.0, 8.0]
@@ -91,17 +91,17 @@ def test_frame_events_add_points(panel):
 
 
 def test_new_run_clears_points(panel):
-    panel.test_ipc.emit(c.SUBJ_FRAME, _frame(0.0, 4.0))
+    panel.test_ipc.emit(c.EVT_FRAME, _frame(0.0, 4.0))
     f = _frame(1.0, 5.0)
     f["run_uid"] = "other"
-    panel.test_ipc.emit(c.SUBJ_FRAME, f)
+    panel.test_ipc.emit(c.EVT_FRAME, f)
     xs, _ = panel._scatter.getData()
     assert list(xs) == [1.0]
 
 
 def test_complete_draws_fit_line(panel):
-    panel.test_ipc.emit(c.SUBJ_FRAME, _frame(0.0, 4.0))
-    panel.test_ipc.emit(c.SUBJ_COMPLETE, {
+    panel.test_ipc.emit(c.EVT_FRAME, _frame(0.0, 4.0))
+    panel.test_ipc.emit(c.EVT_COMPLETE, {
         "run_uid": "u", "motor_field": "sm3_pitch", "points": [],
         "fit": {"ok": True, "optimal_position": 0.25, "coeffs": [2.0, -1.0, 4.0],
                 "reason": None},
@@ -116,7 +116,7 @@ def test_complete_draws_fit_line(panel):
 
 
 def test_complete_without_fit_hides_line(panel):
-    panel.test_ipc.emit(c.SUBJ_COMPLETE, {
+    panel.test_ipc.emit(c.EVT_COMPLETE, {
         "run_uid": "u", "motor_field": "sm3_pitch", "points": [],
         "fit": {"ok": False, "optimal_position": None, "coeffs": None,
                 "reason": "too few points"},
@@ -129,7 +129,7 @@ def test_preview_decodes(panel):
     img = (np.arange(12, dtype=np.uint8) * 20).reshape(3, 4)
     preview = {"b64": base64.b64encode(img.tobytes()).decode("ascii"),
                "shape": [3, 4], "scale": 4}
-    panel.test_ipc.emit(c.SUBJ_FRAME, _frame(0.0, 4.0, preview=preview,
+    panel.test_ipc.emit(c.EVT_FRAME, _frame(0.0, 4.0, preview=preview,
                                               centroid=[8.0, 6.0], angle=0.0))
     shown = panel._image.image
     assert shown is not None
@@ -152,9 +152,9 @@ def global_axis_order(request):
 
 
 @pytest.mark.parametrize("angle_deg", [88.5, 60.0, -30.0])
-def test_preview_line_overlays_known_angle_streak(qtbot, fake_ipc, global_axis_order, angle_deg):
+def test_preview_line_overlays_known_angle_streak(qtbot, fake_svc, global_axis_order, angle_deg):
     """Line drawn from (centroid, angle_deg) must sit on the streak as displayed."""
-    client = RixsServiceClient(ipc=fake_ipc)
+    client = RixsServiceClient(service=fake_svc)
     binder = MagicMock()
     binder.enabled = False
     p = QerlinFocusPanel(client=client, binder=binder)
@@ -170,7 +170,7 @@ def test_preview_line_overlays_known_angle_streak(qtbot, fake_ipc, global_axis_o
     img = np.where(np.abs(d) < 1.0, 255, 0).astype(np.uint8)
     preview = {"b64": base64.b64encode(img.tobytes()).decode("ascii"),
                "shape": [h, w], "scale": scale}
-    fake_ipc.emit(c.SUBJ_FRAME, _frame(0.0, 4.0, preview=preview,
+    fake_svc.emit(c.EVT_FRAME, _frame(0.0, 4.0, preview=preview,
                                        centroid=[cx_full, cy_full], angle=angle_deg))
 
     item = p._image
@@ -189,35 +189,35 @@ def test_preview_line_overlays_known_angle_streak(qtbot, fake_ipc, global_axis_o
 
 
 def test_preview_bad_payload_is_ignored(panel):
-    panel.test_ipc.emit(c.SUBJ_FRAME, _frame(0.0, 4.0, preview={"b64": "!!", "shape": [3, 4],
+    panel.test_ipc.emit(c.EVT_FRAME, _frame(0.0, 4.0, preview={"b64": "!!", "shape": [3, 4],
                                                                  "scale": 1}))
     xs, _ = panel._scatter.getData()
     assert list(xs) == [0.0]
 
 
 def test_status_and_error(panel):
-    panel.test_ipc.emit(c.SUBJ_STATUS, {"run_uid": "u", "state": "scoring",
+    panel.test_ipc.emit(c.EVT_STATUS, {"run_uid": "u", "state": "scoring",
                                         "frames_done": 2, "total": 5})
     assert panel._state_label.text() == "service: scoring 2/5"
-    panel.test_ipc.emit(c.SUBJ_STATUS, {"run_uid": "u", "state": "binding",
+    panel.test_ipc.emit(c.EVT_STATUS, {"run_uid": "u", "state": "binding",
                                         "frames_done": 0, "total": None})
     assert panel._state_label.text() == "service: binding 0/?"
-    panel.test_ipc.emit(c.SUBJ_ERROR, {"run_uid": "u", "error": "boom"})
+    panel.test_ipc.emit(c.EVT_ERROR, {"run_uid": "u", "error": "boom"})
     assert "boom" in panel._status_label.text()
 
 
 def test_status_does_not_overwrite_frame_or_fit_text(panel):
-    panel.test_ipc.emit(c.SUBJ_FRAME, _frame(0.5, None, valid=False, reason="no peak found"))
-    panel.test_ipc.emit(c.SUBJ_STATUS, {"run_uid": "u", "state": "scoring",
+    panel.test_ipc.emit(c.EVT_FRAME, _frame(0.5, None, valid=False, reason="no peak found"))
+    panel.test_ipc.emit(c.EVT_STATUS, {"run_uid": "u", "state": "scoring",
                                         "frames_done": 1, "total": 7})
     assert "no fit: no peak found" in panel._status_label.text()
     assert "scoring 1/7" in panel._state_label.text()
-    panel.test_ipc.emit(c.SUBJ_COMPLETE, {
+    panel.test_ipc.emit(c.EVT_COMPLETE, {
         "run_uid": "u", "motor_field": "sm3_pitch", "points": [],
         "fit": {"ok": False, "optimal_position": None, "coeffs": None,
                 "reason": "fewer than 3 valid points"},
         "best_measured": None})
-    panel.test_ipc.emit(c.SUBJ_STATUS, {"run_uid": "u", "state": "idle",
+    panel.test_ipc.emit(c.EVT_STATUS, {"run_uid": "u", "state": "idle",
                                         "frames_done": 1, "total": 7})
     assert "fewer than 3 valid points" in panel._status_label.text()
     assert panel._state_label.text() == "service: idle"
@@ -228,11 +228,11 @@ def test_axis_label_follows_payload_motor_and_units(panel):
     assert axis.labelText == "position"  # nothing scanned yet
     f = _frame(-0.82, 5.0)
     f.update(motor_field="sample_x", motor_units="mm")
-    panel.test_ipc.emit(c.SUBJ_FRAME, f)
+    panel.test_ipc.emit(c.EVT_FRAME, f)
     assert axis.labelText == "sample_x (mm)"
     assert "mmm" not in axis.labelString()  # no SI auto-prefix
     assert "sample_x -0.82" in panel._status_label.text()
-    panel.test_ipc.emit(c.SUBJ_COMPLETE, {
+    panel.test_ipc.emit(c.EVT_COMPLETE, {
         "run_uid": "u2", "motor_field": "sm3_pitch", "motor_units": "", "points": [],
         "fit": {"ok": True, "optimal_position": 104.0, "coeffs": [1.0, -208.0, 10821.0],
                 "reason": None},
@@ -244,8 +244,8 @@ def test_axis_label_follows_payload_motor_and_units(panel):
 def test_axis_label_kept_for_payload_without_motor(panel):
     f = _frame(0.0, 4.0)
     f.update(motor_field="sample_x", motor_units="mm")
-    panel.test_ipc.emit(c.SUBJ_FRAME, f)
-    panel.test_ipc.emit(c.SUBJ_FRAME, _frame(1.0, 5.0))  # older service: no motor keys
+    panel.test_ipc.emit(c.EVT_FRAME, f)
+    panel.test_ipc.emit(c.EVT_FRAME, _frame(1.0, 5.0))  # older service: no motor keys
     assert panel._plot.getPlotItem().getAxis("bottom").labelText == "sample_x (mm)"
 
 
@@ -263,11 +263,11 @@ def test_plugin_panel_class():
     assert plugin.get_panel_class() is QerlinFocusPanel
 
 
-def test_toggle_follows_binder_changes_without_retriggering(qtbot, fake_ipc):
+def test_toggle_follows_binder_changes_without_retriggering(qtbot, fake_svc):
     from lightfall_endstation_602.binder import RixsRunBinder
     re = MagicMock()
-    binder = RixsRunBinder(RixsServiceClient(ipc=fake_ipc), run_engine_getter=lambda: re)
-    p = QerlinFocusPanel(client=RixsServiceClient(ipc=fake_ipc), binder=binder)
+    binder = RixsRunBinder(RixsServiceClient(service=fake_svc), run_engine_getter=lambda: re)
+    p = QerlinFocusPanel(client=RixsServiceClient(service=fake_svc), binder=binder)
     qtbot.addWidget(p)
     assert binder.enabled and p._enable_toggle.isChecked()
     binder.disable()  # e.g. disabled elsewhere: the toggle must follow
@@ -278,11 +278,11 @@ def test_toggle_follows_binder_changes_without_retriggering(qtbot, fake_ipc):
     assert binder.enabled and re.subscribe.call_count == 2 and re.unsubscribe.call_count == 1
 
 
-def test_toggle_update_from_worker_thread(qtbot, fake_ipc):
+def test_toggle_update_from_worker_thread(qtbot, fake_svc):
     import threading
     from lightfall_endstation_602.binder import RixsRunBinder
-    binder = RixsRunBinder(RixsServiceClient(ipc=fake_ipc), run_engine_getter=MagicMock)
-    p = QerlinFocusPanel(client=RixsServiceClient(ipc=fake_ipc), binder=binder)
+    binder = RixsRunBinder(RixsServiceClient(service=fake_svc), run_engine_getter=MagicMock)
+    p = QerlinFocusPanel(client=RixsServiceClient(service=fake_svc), binder=binder)
     qtbot.addWidget(p)
     t = threading.Thread(target=binder.disable)
     t.start()
@@ -293,8 +293,8 @@ def test_toggle_update_from_worker_thread(qtbot, fake_ipc):
 # ------------------------------------------------------------------ health
 
 
-def test_health_down_then_up(qtbot, fake_ipc):
-    client = RixsServiceClient(ipc=fake_ipc)  # no discover reply: service down
+def test_health_down_then_up(qtbot, fake_svc):
+    client = RixsServiceClient(service=fake_svc)  # no discover reply: service down
     binder = MagicMock()
     binder.enabled = True
     p = QerlinFocusPanel(client=client, binder=binder)
@@ -302,8 +302,7 @@ def test_health_down_then_up(qtbot, fake_ipc):
     qtbot.waitUntil(lambda: p._state_label.text() == "service: not responding", timeout=3000)
     assert client.service_up is False
     assert "rixs-live not responding" in p._status_label.text()
-    fake_ipc.replies[c.SUBJ_DISCOVER] = {"app_name": "rixs-live"}
-    client.check_health_async()
+    fake_svc.set_health("up")
     qtbot.waitUntil(lambda: client.service_up is True, timeout=3000)
     assert p._state_label.text() == "service: idle"
     assert p._status_label.text() == "rixs-live responding again"
@@ -320,9 +319,9 @@ def test_bind_while_down_says_not_analysed(qtbot, panel):
         "run abcdef12 not analysed: rixs-live not responding")
 
 
-def test_bind_from_run_engine_thread_reaches_panel(qtbot, fake_ipc):
+def test_bind_from_run_engine_thread_reaches_panel(qtbot, fake_svc):
     import threading
-    client = RixsServiceClient(ipc=fake_ipc)  # down
+    client = RixsServiceClient(service=fake_svc)  # down
     binder = MagicMock()
     binder.enabled = True
     p = QerlinFocusPanel(client=client, binder=binder)
@@ -338,33 +337,38 @@ def test_bind_from_run_engine_thread_reaches_panel(qtbot, fake_ipc):
 def test_complete_clears_pending_bind(qtbot, panel):
     panel._client.bind_run("u")
     assert panel._pending_uid == "u"
-    panel.test_ipc.emit(c.SUBJ_COMPLETE, {"run_uid": "u", "points": [], "fit": {}})
+    panel.test_ipc.emit(c.EVT_COMPLETE, {"run_uid": "u", "points": [], "fit": {}})
     assert panel._pending_uid is None
     panel._client.record_health(None)
     assert "rixs-live not responding (start it" in panel._status_label.text()
 
 
-def test_health_check_does_not_block_gui_thread(qtbot, fake_ipc):
+def test_bind_never_waits_for_the_service(qtbot, fake_svc):
+    """bind_run runs on the RunEngine thread: an rpc whose reply never comes must not block."""
+    import concurrent.futures
     import time
 
-    class SlowIPC(type(fake_ipc)):
-        def request(self, subject, data, timeout_ms=1000):
-            time.sleep(1.0)
-            raise TimeoutError()
+    class Unanswered(type(fake_svc)):
+        def call(self, action, payload, timeout=2.0):
+            self.calls.append((action, payload))
+            return concurrent.futures.Future()  # never resolves
 
-    client = RixsServiceClient(ipc=SlowIPC())
+    svc = Unanswered()
+    svc.set_health("up")
+    client = RixsServiceClient(service=svc)
     binder = MagicMock()
     binder.enabled = True
-    t0 = time.monotonic()
     p = QerlinFocusPanel(client=client, binder=binder)
     qtbot.addWidget(p)
-    assert time.monotonic() - t0 < 0.5
-    qtbot.waitUntil(lambda: p._state_label.text() == "service: not responding",
-                    timeout=4000)
+    t0 = time.monotonic()
+    client.bind_run("u1")
+    client.run_stop("u1")
+    assert time.monotonic() - t0 < 0.2
+    assert [a for a, _ in svc.calls] == [c.RPC_BIND, c.RPC_STOP]
 
 
 def test_tiled_connect_error_shown_in_status_line(panel):
     err = ("cannot connect to Tiled at http://bcgtiled.dhcp.lbl.gov:8000 using no proxy: "
            "ConnectTimeout: timed out. Check the proxy")
-    panel.test_ipc.emit(c.SUBJ_ERROR, {"run_uid": "u", "error": err})
+    panel.test_ipc.emit(c.EVT_ERROR, {"run_uid": "u", "error": err})
     assert panel._status_label.text() == f"error: {err}"

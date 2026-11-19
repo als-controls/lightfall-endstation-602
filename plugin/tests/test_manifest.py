@@ -6,6 +6,7 @@ import textwrap
 from lightfall_endstation_602.manifest import manifest
 
 EXPECTED = {
+    ("service", "rixs-live"): "lightfall_endstation_602.service_plugin:RixsLiveServicePlugin",
     ("device_backend", "qerlin_sim"): "lightfall_endstation_602.backend:QerlinSimBackendPlugin",
     ("plan", "qerlin_focus_scan"): "lightfall_endstation_602.plan_plugin:QerlinFocusScanPlanPlugin",
     ("plan", "qerlin_optimize"): "lightfall_endstation_602.plan_plugin:QerlinOptimizePlanPlugin",
@@ -24,7 +25,7 @@ def test_manifest_entries():
 
 def test_manifest_types():
     for e in manifest.plugins:
-        assert e.type_name in {"device_backend", "plan", "panel", "tool"}
+        assert e.type_name in {"service", "device_backend", "plan", "panel", "tool"}
         mod, _, cls = e.import_path.partition(":")
         assert isinstance(getattr(importlib.import_module(mod), cls), type)
 

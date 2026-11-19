@@ -1,4 +1,4 @@
-"""RixsLiveService against a fake NATS client and a fake, growing Tiled run."""
+"""RixsLiveService against fake session delivery and a fake, growing Tiled run."""
 import asyncio
 
 import numpy as np
@@ -8,14 +8,13 @@ from lightfall_endstation_602.sim.model import FocusModel, render_frame
 from rixs_live.config import AppConfig
 from rixs_live.contract import (
     CONTRACT_VERSION,
-    SUBJ_BIND,
-    SUBJ_COMPLETE,
-    SUBJ_DISCOVER,
-    SUBJ_ERROR,
-    SUBJ_FRAME,
-    SUBJ_RESULT,
-    SUBJ_STATUS,
-    SUBJ_STOP,
+    EVT_COMPLETE,
+    EVT_ERROR,
+    EVT_FRAME,
+    EVT_STATUS,
+    RPC_BIND,
+    RPC_RESULT,
+    RPC_STOP,
 )
 from rixs_live.focus import FrameScore
 from rixs_live.service import RixsLiveService
@@ -26,31 +25,25 @@ FRAME_KEYS = {"run_uid", "seq_num", "motor_field", "motor_units", "position", "p
 
 
 class FakeNats:
+    """NatsClient stand-in that also records every session event the service emits."""
+
     def __init__(self):
-        self.published = []      # (subject, payload)
-        self.subscriptions = {}  # subject -> cb
+        self.published = []  # (event name, payload, session)
         self.tiled_credentials = None
+        self.core = None
 
     async def connect(self): ...
     async def close(self): ...
     async def authenticate(self): return None
 
-    async def publish(self, subject, payload):
-        self.published.append((subject, payload))
+    async def emit(self, session, name, payload):
+        self.published.append((name, payload, session))
 
-    async def subscribe(self, subject, cb):
-        self.subscriptions[subject] = cb
+    def on(self, name):
+        return [p for n, p, _ in self.published if n == name]
 
-    async def reply(self, msg, payload):
-        self.published.append((getattr(msg, "reply", "?"), payload))
-
-    def on(self, subject):
-        return [p for s, p in self.published if s == subject]
-
-
-class Msg:
-    def __init__(self, reply="inbox1"):
-        self.reply = reply
+    def sessions_of(self, name):
+        return [s for n, _, s in self.published if n == name]
 
 
 class FakeStream:
@@ -123,13 +116,13 @@ def _add_run(tiled, uid, frames, positions, table_order=None, extra=None, **md_o
 def _service(fake, tiled_fake, **cfg_over):
     cfg = AppConfig(**{"poll_interval_s": 0.01, "bind_lookup_timeout_s": 0.3,
                        "drain_settle_s": 0.2, "drain_timeout_s": 2.0, **cfg_over})
-    return RixsLiveService(cfg, nats_client=fake,
+    return RixsLiveService(cfg, nats_client=fake, emit=fake.emit,
                            tiled_connect=lambda url, key, proxy=None: tiled_fake)
 
 
 def _bind(uid):
     return {"run_uid": uid, "tiled_url": "http://local",
-            "lightfall_prefix": "als.7011", "contract_version": CONTRACT_VERSION}
+            "contract_version": CONTRACT_VERSION}
 
 
 async def _until(pred, timeout=30.0):
@@ -171,13 +164,13 @@ async def test_bind_score_complete():
     await svc._handle_bind(_bind("runA"), None)
     assert svc.busy
     stream.visible = 4
-    await _until(lambda: len(fake.on(SUBJ_FRAME)) == 4, timeout=60)
+    await _until(lambda: len(fake.on(EVT_FRAME)) == 4, timeout=60)
     stream.visible = 7
-    await _until(lambda: len(fake.on(SUBJ_FRAME)) == 7, timeout=60)
+    await _until(lambda: len(fake.on(EVT_FRAME)) == 7, timeout=60)
     await svc._handle_stop({"run_uid": "runA"}, None)
     await svc.wait_idle()
 
-    msgs = fake.on(SUBJ_FRAME)
+    msgs = fake.on(EVT_FRAME)
     assert [m["seq_num"] for m in msgs] == [1, 2, 3, 4, 5, 6, 7]
     assert all(set(m) == FRAME_KEYS for m in msgs)
     assert np.allclose([m["position"] for m in msgs], positions)  # not the setpoint decoy
@@ -186,7 +179,7 @@ async def test_bind_score_complete():
     assert msgs[3]["resolving_power"] is not None
     assert set(msgs[0]["preview"]) == {"b64", "shape", "scale"}
 
-    (done,) = fake.on(SUBJ_COMPLETE)
+    (done,) = fake.on(EVT_COMPLETE)
     assert done["run_uid"] == "runA" and done["motor_field"] == "sm3_pitch"
     assert done["motor_units"] == "" and msgs[0]["motor_units"] == ""
     assert msgs[0]["motor_field"] == "sm3_pitch"
@@ -197,9 +190,9 @@ async def test_bind_score_complete():
                                       "resolving_power", "score_valid"}
     assert done["best_measured"]["position"] == pytest.approx(positions[3])
     assert svc.results["runA"] == done
-    assert fake.on(SUBJ_STATUS)[-1]["state"] == "idle"
-    assert fake.on(SUBJ_STATUS)[-1]["frames_done"] == 7
-    assert not svc.busy and not fake.on(SUBJ_ERROR)
+    assert fake.on(EVT_STATUS)[-1]["state"] == "idle"
+    assert fake.on(EVT_STATUS)[-1]["frames_done"] == 7
+    assert not svc.busy and not fake.on(EVT_ERROR)
 
 
 async def test_stop_drains_frames_not_yet_polled(stub_score):
@@ -211,8 +204,8 @@ async def test_stop_drains_frames_not_yet_polled(stub_score):
     await asyncio.sleep(0.05)
     stream.visible = 5
     await svc._handle_stop({"run_uid": "runA"}, None)
-    assert [m["seq_num"] for m in fake.on(SUBJ_FRAME)] == [1, 2, 3, 4, 5]
-    (done,) = fake.on(SUBJ_COMPLETE)
+    assert [m["seq_num"] for m in fake.on(EVT_FRAME)] == [1, 2, 3, 4, 5]
+    (done,) = fake.on(EVT_COMPLETE)
     assert done["fit"]["ok"] and abs(done["fit"]["optimal_position"] - 0.2) < 1e-6
 
 
@@ -226,10 +219,10 @@ async def test_any_motor_field_and_units_pass_through(stub_score):
     svc = _service(fake, tiled)
     await svc._handle_bind(_bind("runX"), None)
     await svc._handle_stop({"run_uid": "runX"}, None)
-    frames = fake.on(SUBJ_FRAME)
+    frames = fake.on(EVT_FRAME)
     assert [f["position"] for f in frames] == pytest.approx(positions)
     assert {(f["motor_field"], f["motor_units"]) for f in frames} == {("sample_x", "mm")}
-    (done,) = fake.on(SUBJ_COMPLETE)
+    (done,) = fake.on(EVT_COMPLETE)
     assert (done["motor_field"], done["motor_units"]) == ("sample_x", "mm")
     assert done["fit"]["ok"] and done["fit"]["optimal_position"] == pytest.approx(-0.8)
 
@@ -248,7 +241,7 @@ async def test_complete_with_invalid_points(monkeypatch):
     svc = _service(fake, tiled)
     await svc._handle_bind(_bind("runA"), None)
     await svc._handle_stop({"run_uid": "runA"}, None)
-    (done,) = fake.on(SUBJ_COMPLETE)
+    (done,) = fake.on(EVT_COMPLETE)
     assert [p["score_valid"] for p in done["points"]] == [False, True, True, True, False]
     assert done["fit"]["ok"]
     assert done["best_measured"] == {"position": 0.2, "fwhm_px": 3.0}
@@ -263,7 +256,7 @@ async def test_no_valid_points_gives_null_best(monkeypatch):
     svc = _service(fake, tiled)
     await svc._handle_bind(_bind("runA"), None)
     await svc._handle_stop({"run_uid": "runA"}, None)
-    (done,) = fake.on(SUBJ_COMPLETE)
+    (done,) = fake.on(EVT_COMPLETE)
     assert done["best_measured"] is None
     assert not done["fit"]["ok"]
 
@@ -277,15 +270,12 @@ async def test_result_request_returns_stored(stub_score):
     stream = _add_run(tiled, "runA", _parabola_frames(positions), positions)
     stream.visible = 4
     svc = _service(fake, tiled)
-    await svc._register_subscriptions()
     await svc._handle_bind(_bind("runA"), None)
     await svc._handle_stop({"run_uid": "runA"}, None)
-    (done,) = fake.on(SUBJ_COMPLETE)
+    (done,) = fake.on(EVT_COMPLETE)
 
-    await fake.subscriptions[SUBJ_RESULT]({"run_uid": "runA"}, Msg("r1"))
-    assert fake.on("r1") == [done]
-    await fake.subscriptions[SUBJ_RESULT]({"run_uid": "ghost"}, Msg("r2"))
-    assert fake.on("r2") == [{"error": "unknown run ghost"}]
+    assert await svc._rpc_result(None, {"run_uid": "runA"}) == {"result": done}
+    assert await svc._rpc_result(None, {"run_uid": "ghost"}) == {"result": None}
 
 
 async def test_result_request_pending_while_bound_and_draining(stub_score):
@@ -294,31 +284,29 @@ async def test_result_request_pending_while_bound_and_draining(stub_score):
     fake, tiled = FakeNats(), FakeTiled()
     stream = _add_run(tiled, "runA", _parabola_frames(pos), pos)  # num_points = 5
     svc = _service(fake, tiled, drain_settle_s=0.1, drain_timeout_s=5.0)
-    await svc._register_subscriptions()
-    ask = fake.subscriptions[SUBJ_RESULT]
+
+    async def ask(uid):
+        return await svc._rpc_result(None, {"run_uid": uid})
+
     await svc._handle_bind(_bind("runA"), None)
     stream.visible = 2
-    await _until(lambda: len(fake.on(SUBJ_FRAME)) == 2)
+    await _until(lambda: len(fake.on(EVT_FRAME)) == 2)
 
-    await ask({"run_uid": "runA"}, Msg("bound"))
-    assert fake.on("bound") == [{"pending": True, "run_uid": "runA",
-                                 "frames_done": 2, "total": 5}]
+    assert await ask("runA") == {"pending": True, "run_uid": "runA",
+                                 "frames_done": 2, "total": 5}
 
     # Drain: the stop is waiting for the 3 queued frames.
     stop = asyncio.get_running_loop().create_task(
         svc._handle_stop({"run_uid": "runA"}, None))
     await asyncio.sleep(0.2)
     assert not stop.done()
-    await ask({"run_uid": "runA"}, Msg("draining"))
-    (reply,) = fake.on("draining")
+    reply = await ask("runA")
     assert reply["pending"] is True and reply["total"] == 5
     stream.visible = 5
     await stop
-    (done,) = fake.on(SUBJ_COMPLETE)
-    await ask({"run_uid": "runA"}, Msg("after"))
-    assert fake.on("after") == [done]
-    await ask({"run_uid": "ghost"}, Msg("ghost"))
-    assert fake.on("ghost") == [{"error": "unknown run ghost"}]
+    (done,) = fake.on(EVT_COMPLETE)
+    assert await ask("runA") == {"result": done}
+    assert await ask("ghost") == {"result": None}
 
 
 async def test_result_request_pending_during_bind(stub_score):
@@ -327,12 +315,10 @@ async def test_result_request_pending_during_bind(stub_score):
     staged = FakeTiled()
     _add_run(staged, "late", _parabola_frames(pos), pos)
     svc = _service(fake, tiled, bind_lookup_timeout_s=5.0)
-    await svc._register_subscriptions()
     bind = asyncio.get_running_loop().create_task(svc._handle_bind(_bind("late"), None))
     await asyncio.sleep(0.1)  # bind is retrying the Tiled lookup
-    await fake.subscriptions[SUBJ_RESULT]({"run_uid": "late"}, Msg("r"))
-    assert fake.on("r") == [{"pending": True, "run_uid": "late",
-                             "frames_done": 0, "total": None}]
+    assert await svc._rpc_result(None, {"run_uid": "late"}) == {
+        "pending": True, "run_uid": "late", "frames_done": 0, "total": None}
     tiled.runs.update(staged.runs)
     await bind
     await svc.wait_idle()
@@ -365,19 +351,19 @@ async def test_bad_bind_publishes_error_and_recovers(stub_score):
     cases = [bad_bind_version, _bind("v99"), _bind("noshape"), _bind("missing-in-tiled")]
     for i, payload in enumerate(cases, start=1):
         await svc._handle_bind(payload, None)
-        errors = fake.on(SUBJ_ERROR)
+        errors = fake.on(EVT_ERROR)
         assert len(errors) == i, payload
         assert errors[-1]["run_uid"] == payload["run_uid"] and errors[-1]["error"]
         assert not svc.busy
-    assert not fake.on(SUBJ_FRAME)
+    assert not fake.on(EVT_FRAME)
 
     s = _add_run(tiled, "good", frames, [0.0, 0.5, 1.0])
     s.visible = 3
     await svc._handle_bind(_bind("good"), None)
     assert svc.busy
     await svc._handle_stop({"run_uid": "good"}, None)
-    assert fake.on(SUBJ_COMPLETE)[0]["run_uid"] == "good"
-    assert len(fake.on(SUBJ_ERROR)) == 4
+    assert fake.on(EVT_COMPLETE)[0]["run_uid"] == "good"
+    assert len(fake.on(EVT_ERROR)) == 4
 
 
 async def test_poll_error_publishes_error_and_unbinds(stub_score):
@@ -390,12 +376,12 @@ async def test_poll_error_publishes_error_and_unbinds(stub_score):
         raise RuntimeError("tiled connection dropped")
 
     svc._current["reader"].read_new_rows = boom
-    await _until(lambda: fake.on(SUBJ_ERROR))
-    assert "tiled connection dropped" in fake.on(SUBJ_ERROR)[-1]["error"]
+    await _until(lambda: fake.on(EVT_ERROR))
+    assert "tiled connection dropped" in fake.on(EVT_ERROR)[-1]["error"]
     await _until(lambda: not svc.busy)
-    assert fake.on(SUBJ_STATUS)[-1]["state"] == "idle"
+    assert fake.on(EVT_STATUS)[-1]["state"] == "idle"
     await svc._handle_stop({"run_uid": "runA"}, None)  # now unbound: no-op
-    assert len(fake.on(SUBJ_ERROR)) == 1 and not fake.on(SUBJ_COMPLETE)
+    assert len(fake.on(EVT_ERROR)) == 1 and not fake.on(EVT_COMPLETE)
 
 
 async def test_non_rixs_run_ignored():
@@ -425,38 +411,87 @@ async def test_rebind_replaces_current(stub_score):
     svc = _service(fake, tiled)
     await svc._handle_bind(_bind("runA"), None)
     a.visible = 1
-    await _until(lambda: len(fake.on(SUBJ_FRAME)) == 1)
+    await _until(lambda: len(fake.on(EVT_FRAME)) == 1)
 
     await svc._handle_bind(_bind("runB"), None)  # replaces runA without completing it
     assert svc.busy and svc._current["run_uid"] == "runB"
     a.visible = 3
     await svc._handle_stop({"run_uid": "runA"}, None)  # stale stop: ignored
-    assert not fake.on(SUBJ_COMPLETE)
+    assert not fake.on(EVT_COMPLETE)
 
     b.visible = 3
     await svc._handle_stop({"run_uid": "runB"}, None)
-    (done,) = fake.on(SUBJ_COMPLETE)
+    (done,) = fake.on(EVT_COMPLETE)
     assert done["run_uid"] == "runB"
-    assert [m["run_uid"] for m in fake.on(SUBJ_FRAME)] == ["runA"] + ["runB"] * 3
+    assert [m["run_uid"] for m in fake.on(EVT_FRAME)] == ["runA"] + ["runB"] * 3
     assert "runA" not in svc.results
 
 
 # ------------------------------------------------------------------- discovery
 
 
-async def test_discovery_reply():
+def test_service_info_and_rpcs():
+    """meta.info carries what discovery used to; the commands are private rpcs."""
+    svc = _service(FakeNats(), FakeTiled(), dispersion_mev_per_px=2.5,
+                   nats={"lightfall_prefix": "als.602"})
+    host = svc._host
+    assert (host.name, host.scope, host.contract) == ("rixs-live", "als.602", "1.0")
+    assert host.summary == {"app_name": "rixs-live", "dispersion_mev_per_px": 2.5,
+                            "rixs_contract_version": CONTRACT_VERSION}
+    assert {RPC_BIND, RPC_STOP, RPC_RESULT} <= set(host._handlers)
+    assert host._trust({"app_name": "lightfall"}) is True
+    assert host._trust({"app_name": "someone-else"}) is False
+
+
+def test_explicit_scope_overrides_the_prefix():
+    svc = _service(FakeNats(), FakeTiled(),
+                   nats={"lightfall_prefix": "als.602", "scope": "als.602.test"})
+    assert svc._host.scope == "als.602.test"
+
+
+async def test_rpcs_answer_at_once_and_run_in_the_background(stub_score):
+    pos = [-0.4, 0.0, 0.4]
     fake, tiled = FakeNats(), FakeTiled()
-    svc = _service(fake, tiled, dispersion_mev_per_px=2.5)
-    await svc._register_subscriptions()
-    assert {SUBJ_BIND, SUBJ_STOP, SUBJ_RESULT, SUBJ_DISCOVER,
-            "rixs.meta.actions", "rixs.meta.events"} <= set(fake.subscriptions)
-    for i, subj in enumerate((SUBJ_DISCOVER, "rixs.meta.actions", "rixs.meta.events")):
-        await fake.subscriptions[subj]({}, Msg(f"d{i}"))
-        (reply,) = fake.on(f"d{i}")
-        assert reply == {"app_name": "rixs-live", "app_version": "",
-                         "actions": [SUBJ_RESULT],
-                         "events": [SUBJ_STATUS, SUBJ_ERROR, SUBJ_FRAME, SUBJ_COMPLETE],
-                         "dispersion_mev_per_px": 2.5}
+    stream = _add_run(tiled, "runA", _parabola_frames(pos), pos)
+    stream.visible = 3
+    svc = _service(fake, tiled)
+    session = object()
+    assert await svc._rpc_bind(session, _bind("runA")) == {"accepted": True}
+    assert await svc._rpc_stop(session, {"run_uid": "runA"}) == {"accepted": True}
+    await _until(lambda: fake.on(EVT_COMPLETE))
+    assert set(fake.sessions_of(EVT_FRAME)) == {session}  # only the binding session
+    assert fake.sessions_of(EVT_COMPLETE) == [session]
+
+
+async def test_rpcs_refuse_a_missing_run_uid():
+    from rixs_live.svc.host import ServiceError
+
+    svc = _service(FakeNats(), FakeTiled())
+    for rpc in (svc._rpc_bind, svc._rpc_stop, svc._rpc_result):
+        with pytest.raises(ServiceError) as info:
+            await rpc(None, {})
+        assert info.value.code == "bad_request"
+
+
+async def test_emit_goes_to_live_sessions_only():
+    from rixs_live.svc.host import Session
+
+    svc = RixsLiveService(AppConfig(), nats_client=FakeNats())
+    sent = []
+
+    async def host_emit(session, name, payload):
+        sent.append((session.token, name))
+
+    svc._host.emit = host_emit
+    live = Session(token="t1", app_name="lightfall", user=None,
+                   delivery_root="_PRIV.x.d.y", last_ping=0.0)
+    svc._host._sessions["t1"] = live
+    gone = Session(token="t2", app_name="lightfall", user=None,
+                   delivery_root="_PRIV.x.d.z", last_ping=0.0)
+    await svc._emit(live, EVT_STATUS, {"run_uid": "u"})
+    await svc._emit(gone, EVT_STATUS, {"run_uid": "u"})
+    await svc._emit(None, EVT_STATUS, {"run_uid": "u"})
+    assert sent == [("t1", EVT_STATUS)]
 
 
 async def test_status_progress(stub_score):
@@ -464,14 +499,14 @@ async def test_status_progress(stub_score):
     s = _add_run(tiled, "runA", _parabola_frames([0.0, 0.5, 1.0]), [0.0, 0.5, 1.0])
     svc = _service(fake, tiled)
     await svc._handle_bind(_bind("runA"), None)
-    assert fake.on(SUBJ_STATUS)[0] == {"run_uid": "runA", "state": "binding",
+    assert fake.on(EVT_STATUS)[0] == {"run_uid": "runA", "state": "binding",
                                        "frames_done": 0, "total": 3}
     s.visible = 3
-    await _until(lambda: len(fake.on(SUBJ_FRAME)) == 3)
+    await _until(lambda: len(fake.on(EVT_FRAME)) == 3)
     await _until(lambda: any(m["state"] == "scoring" and m["frames_done"] == 3
-                             for m in fake.on(SUBJ_STATUS)))
+                             for m in fake.on(EVT_STATUS)))
     await svc._handle_stop({"run_uid": "runA"}, None)
-    assert fake.on(SUBJ_STATUS)[-1] == {"run_uid": "runA", "state": "idle",
+    assert fake.on(EVT_STATUS)[-1] == {"run_uid": "runA", "state": "idle",
                                         "frames_done": 3, "total": 3}
 
 
@@ -496,10 +531,10 @@ async def test_bind_waits_for_run_to_appear(stub_score):
     task = _later(0.4, lambda: tiled.runs.update(staged.runs))  # container lands late
     await svc._handle_bind(_bind("late"), None)
     await task
-    assert svc.busy and not fake.on(SUBJ_ERROR)
+    assert svc.busy and not fake.on(EVT_ERROR)
     stream.visible = 3
     await svc._handle_stop({"run_uid": "late"}, None)
-    (done,) = fake.on(SUBJ_COMPLETE)
+    (done,) = fake.on(EVT_COMPLETE)
     assert len(done["points"]) == 3 and done["fit"]["ok"]
 
 
@@ -510,7 +545,7 @@ async def test_bind_gives_up_after_lookup_timeout():
     t0 = loop.time()
     await svc._handle_bind(_bind("never"), None)
     assert 0.25 <= loop.time() - t0 < 2.0
-    (err,) = fake.on(SUBJ_ERROR)
+    (err,) = fake.on(EVT_ERROR)
     assert err["run_uid"] == "never" and not svc.busy
 
 
@@ -524,10 +559,10 @@ async def test_stop_during_bind_retry_is_deferred(stub_score):
     bind = asyncio.get_running_loop().create_task(svc._handle_bind(_bind("late"), None))
     await asyncio.sleep(0.1)
     await svc._handle_stop({"run_uid": "late"}, None)  # overtakes the run container
-    assert not fake.on(SUBJ_COMPLETE)
+    assert not fake.on(EVT_COMPLETE)
     tiled.runs.update(staged.runs)
     await bind
-    (done,) = fake.on(SUBJ_COMPLETE)
+    (done,) = fake.on(EVT_COMPLETE)
     assert len(done["points"]) == 3 and not svc.busy
 
 
@@ -538,14 +573,14 @@ async def test_frames_landing_after_stop_are_included(stub_score):
     svc = _service(fake, tiled, drain_settle_s=0.1, drain_timeout_s=5.0)
     await svc._handle_bind(_bind("runA"), None)
     stream.visible = 2
-    await _until(lambda: len(fake.on(SUBJ_FRAME)) == 2)
+    await _until(lambda: len(fake.on(EVT_FRAME)) == 2)
     # Known total: the drain waits past drain_settle_s for the queued events.
     task = _later(0.5, lambda: setattr(stream, "visible", 5))
     await svc._handle_stop({"run_uid": "runA"}, None)
     await task
-    (done,) = fake.on(SUBJ_COMPLETE)
+    (done,) = fake.on(EVT_COMPLETE)
     assert [p["position"] for p in done["points"]] == pos
-    assert [m["seq_num"] for m in fake.on(SUBJ_FRAME)] == [1, 2, 3, 4, 5]
+    assert [m["seq_num"] for m in fake.on(EVT_FRAME)] == [1, 2, 3, 4, 5]
 
 
 async def test_late_frames_unknown_total_settle(stub_score):
@@ -556,11 +591,11 @@ async def test_late_frames_unknown_total_settle(stub_score):
     svc = _service(fake, tiled, drain_settle_s=1.0, drain_timeout_s=5.0)
     await svc._handle_bind(_bind("runA"), None)
     stream.visible = 2
-    await _until(lambda: len(fake.on(SUBJ_FRAME)) == 2)
+    await _until(lambda: len(fake.on(EVT_FRAME)) == 2)
     task = _later(0.3, lambda: setattr(stream, "visible", 5))  # within the settle window
     await svc._handle_stop({"run_uid": "runA"}, None)
     await task
-    (done,) = fake.on(SUBJ_COMPLETE)
+    (done,) = fake.on(EVT_COMPLETE)
     assert len(done["points"]) == 5
 
 
@@ -575,9 +610,9 @@ async def test_drain_capped_when_frames_never_arrive(stub_score):
     t0 = loop.time()
     await svc._handle_stop({"run_uid": "runA"}, None)
     assert 0.45 <= loop.time() - t0 < 3.0
-    (done,) = fake.on(SUBJ_COMPLETE)
+    (done,) = fake.on(EVT_COMPLETE)
     assert len(done["points"]) == 3
-    assert fake.on(SUBJ_STATUS)[-1]["state"] == "idle"
+    assert fake.on(EVT_STATUS)[-1]["state"] == "idle"
 
 
 async def test_slow_backlog_not_cut_off_by_drain_cap(monkeypatch):
@@ -599,7 +634,7 @@ async def test_slow_backlog_not_cut_off_by_drain_cap(monkeypatch):
     task = _later(0.25, lambda: setattr(stream, "visible", 10))
     await svc._handle_stop({"run_uid": "runA"}, None)
     await task
-    (done,) = fake.on(SUBJ_COMPLETE)
+    (done,) = fake.on(EVT_COMPLETE)
     assert len(done["points"]) == 10
 
 
@@ -615,7 +650,7 @@ def test_credentials_never_from_bind_and_warns_once():
         assert svc._resolve_credentials(data) == ("http://bind", "cfgkey")
     finally:
         logger.remove(sink)
-    assert len([m for m in msgs if "public subjects" in m]) == 1
+    assert len([m for m in msgs if "auth handshake" in m]) == 1
     assert "leaked" not in "".join(msgs)
 
 
@@ -633,25 +668,6 @@ def test_credentials_config_fallback_and_none():
     assert _service(FakeNats(), None)._resolve_credentials({}) == ("", None)
 
 
-async def test_bind_prefix_mismatch_logged_once(stub_score):
-    from loguru import logger
-    pos = [-0.4, 0.0, 0.4]
-    fake, tiled = FakeNats(), FakeTiled()
-    _add_run(tiled, "runA", _parabola_frames(pos), pos)
-    svc = _service(fake, tiled)
-    msgs = []
-    sink = logger.add(lambda m: msgs.append(m.record["message"]), level="WARNING")
-    try:
-        await svc._handle_bind({**_bind("runA"), "lightfall_prefix": "als.602"}, None)
-        await svc._handle_bind({**_bind("runA"), "lightfall_prefix": "als.602"}, None)
-        await svc._handle_bind({**_bind("runA"), "lightfall_prefix": svc._config.nats.lightfall_prefix}, None)
-    finally:
-        logger.remove(sink)
-    mism = [m for m in msgs if "differs" in m]
-    assert len(mism) == 1 and "als.602" in mism[0]
-    assert fake.on(SUBJ_ERROR) == []  # still binds fine
-
-
 async def test_aborted_run_completes_without_waiting_for_num_points(stub_score):
     pos = [-0.8, -0.4, 0.0, 0.4, 0.8]
     fake, tiled = FakeNats(), FakeTiled()
@@ -659,12 +675,12 @@ async def test_aborted_run_completes_without_waiting_for_num_points(stub_score):
     stream.visible = 2
     svc = _service(fake, tiled, drain_settle_s=0.2, drain_timeout_s=10.0)
     await svc._handle_bind(_bind("runA"), None)
-    await _until(lambda: len(fake.on(SUBJ_FRAME)) == 2)
+    await _until(lambda: len(fake.on(EVT_FRAME)) == 2)
     loop = asyncio.get_running_loop()
     t0 = loop.time()
     await svc._handle_stop({"run_uid": "runA", "exit_status": "abort"}, None)
     assert loop.time() - t0 < 3.0
-    (done,) = fake.on(SUBJ_COMPLETE)
+    (done,) = fake.on(EVT_COMPLETE)
     assert len(done["points"]) == 2 and not svc.busy
 
 
@@ -675,11 +691,11 @@ async def test_aborted_run_still_collects_late_rows_within_settle(stub_score):
     stream.visible = 2
     svc = _service(fake, tiled, drain_settle_s=1.0, drain_timeout_s=10.0)
     await svc._handle_bind(_bind("runA"), None)
-    await _until(lambda: len(fake.on(SUBJ_FRAME)) == 2)
+    await _until(lambda: len(fake.on(EVT_FRAME)) == 2)
     task = _later(0.3, lambda: setattr(stream, "visible", 3))
     await svc._handle_stop({"run_uid": "runA", "exit_status": "fail"}, None)
     await task
-    (done,) = fake.on(SUBJ_COMPLETE)
+    (done,) = fake.on(EVT_COMPLETE)
     assert len(done["points"]) == 3
 
 
@@ -690,14 +706,14 @@ async def test_stop_num_events_used_as_expected_total(stub_score):
     stream.visible = 3
     svc = _service(fake, tiled, drain_settle_s=0.1, drain_timeout_s=10.0)
     await svc._handle_bind(_bind("runA"), None)
-    await _until(lambda: len(fake.on(SUBJ_FRAME)) == 3)
+    await _until(lambda: len(fake.on(EVT_FRAME)) == 3)
     loop = asyncio.get_running_loop()
     t0 = loop.time()
     # Aborted after 3 events: num_events wins over num_points, so no waiting for 5.
     await svc._handle_stop({"run_uid": "runA", "exit_status": "abort",
                             "num_events": {"primary": 3}}, None)
     assert loop.time() - t0 < 3.0
-    assert len(fake.on(SUBJ_COMPLETE)[0]["points"]) == 3
+    assert len(fake.on(EVT_COMPLETE)[0]["points"]) == 3
 
 
 async def test_stop_num_events_waits_for_late_rows(stub_score):
@@ -708,12 +724,12 @@ async def test_stop_num_events_waits_for_late_rows(stub_score):
     stream.visible = 2
     svc = _service(fake, tiled, drain_settle_s=0.1, drain_timeout_s=5.0)
     await svc._handle_bind(_bind("runA"), None)
-    await _until(lambda: len(fake.on(SUBJ_FRAME)) == 2)
+    await _until(lambda: len(fake.on(EVT_FRAME)) == 2)
     task = _later(0.6, lambda: setattr(stream, "visible", 4))  # past drain_settle_s
     await svc._handle_stop({"run_uid": "runA", "exit_status": "success",
                             "num_events": {"primary": 4}}, None)
     await task
-    assert len(fake.on(SUBJ_COMPLETE)[0]["points"]) == 4
+    assert len(fake.on(EVT_COMPLETE)[0]["points"]) == 4
 
 
 async def test_old_style_stop_payload_still_waits_for_num_points(stub_score):
@@ -723,11 +739,11 @@ async def test_old_style_stop_payload_still_waits_for_num_points(stub_score):
     stream.visible = 2
     svc = _service(fake, tiled, drain_settle_s=0.1, drain_timeout_s=5.0)
     await svc._handle_bind(_bind("runA"), None)
-    await _until(lambda: len(fake.on(SUBJ_FRAME)) == 2)
+    await _until(lambda: len(fake.on(EVT_FRAME)) == 2)
     task = _later(0.5, lambda: setattr(stream, "visible", 5))
     await svc._handle_stop({"run_uid": "runA"}, None)  # no exit_status / num_events
     await task
-    assert len(fake.on(SUBJ_COMPLETE)[0]["points"]) == 5
+    assert len(fake.on(EVT_COMPLETE)[0]["points"]) == 5
 
 
 async def test_scrambled_table_rows_give_correct_optimal_position(stub_score):
@@ -741,13 +757,13 @@ async def test_scrambled_table_rows_give_correct_optimal_position(stub_score):
     svc = _service(fake, tiled)
     stream.visible = n
     await svc._handle_bind(_bind("runS"), None)
-    await _until(lambda: len(fake.on(SUBJ_FRAME)) == n)
+    await _until(lambda: len(fake.on(EVT_FRAME)) == n)
     await svc._handle_stop({"run_uid": "runS"}, None)
     await svc.wait_idle()
-    msgs = fake.on(SUBJ_FRAME)
+    msgs = fake.on(EVT_FRAME)
     assert [m["seq_num"] for m in msgs] == list(range(1, n + 1))
     assert np.allclose([m["position"] for m in msgs], positions)
-    (done,) = fake.on(SUBJ_COMPLETE)
+    (done,) = fake.on(EVT_COMPLETE)
     assert done["fit"]["ok"], done["fit"]
     assert abs(done["fit"]["optimal_position"] - 0.2) < 0.05
 
@@ -763,9 +779,9 @@ async def test_single_motor_frames_carry_positions(stub_score):
     svc = _service(fake, tiled)
     await svc._handle_bind(_bind("run1"), None)
     await svc._handle_stop({"run_uid": "run1"}, None)
-    assert [f["positions"] for f in fake.on(SUBJ_FRAME)] == [
+    assert [f["positions"] for f in fake.on(EVT_FRAME)] == [
         {"sm3_pitch": p} for p in positions]
-    (done,) = fake.on(SUBJ_COMPLETE)
+    (done,) = fake.on(EVT_COMPLETE)
     assert "motor_fields" not in done and "positions" not in done["points"][0]
 
 
@@ -781,10 +797,10 @@ async def test_image_stream_is_read_instead_of_primary(stub_score):
     assert svc._current["info"].image_stream == "frames"
     await svc._handle_stop({"run_uid": "runF", "num_events": {"frames": 5, "primary": 5}},
                            None)
-    assert [m["seq_num"] for m in fake.on(SUBJ_FRAME)] == [1, 2, 3, 4, 5]
-    (done,) = fake.on(SUBJ_COMPLETE)
+    assert [m["seq_num"] for m in fake.on(EVT_FRAME)] == [1, 2, 3, 4, 5]
+    (done,) = fake.on(EVT_COMPLETE)
     assert done["fit"]["ok"]  # one motor: still fitted
-    assert not fake.on(SUBJ_ERROR)
+    assert not fake.on(EVT_ERROR)
 
 
 async def test_image_stream_ignores_rows_in_primary(stub_score):
@@ -797,8 +813,8 @@ async def test_image_stream_ignores_rows_in_primary(stub_score):
     svc = _service(fake, tiled, drain_settle_s=0.05)
     await svc._handle_bind(_bind("runG"), None)
     await svc._handle_stop({"run_uid": "runG", "exit_status": "abort"}, None)
-    assert not fake.on(SUBJ_FRAME)
-    (done,) = fake.on(SUBJ_COMPLETE)
+    assert not fake.on(EVT_FRAME)
+    (done,) = fake.on(EVT_COMPLETE)
     assert done["points"] == [] and done["best_measured"] is None
 
 
@@ -833,13 +849,13 @@ async def test_multi_motor_run_complete_payload(stub_score, n_motors):
     await svc._handle_bind(_bind("runN"), None)
     await svc._handle_stop({"run_uid": "runN"}, None)
     cols = {"sm3_pitch": pitch, "sample_x": sx, "aux": aux}
-    msgs = fake.on(SUBJ_FRAME)
+    msgs = fake.on(EVT_FRAME)
     assert [m["seq_num"] for m in msgs] == [1, 2, 3, 4, 5]
     for i, m in enumerate(msgs):  # scrambled table: still aligned by seq_num
         assert m["positions"] == {f: pytest.approx(cols[f][i]) for f in fields}
         assert m["position"] == pytest.approx(pitch[i])
         assert m["fwhm_px"] == pytest.approx(widths[i])
-    (done,) = fake.on(SUBJ_COMPLETE)
+    (done,) = fake.on(EVT_COMPLETE)
     assert done["motor_fields"] == fields
     assert done["fit"] == {"ok": False, "optimal_position": None, "coeffs": None,
                            "reason": "multi-motor run: no 1D fit"}
@@ -848,7 +864,7 @@ async def test_multi_motor_run_complete_payload(stub_score, n_motors):
     assert done["best_measured"] == {
         "position": pytest.approx(104.0), "fwhm_px": pytest.approx(4.0),
         "positions": {f: pytest.approx(cols[f][1]) for f in fields}}
-    assert svc.results["runN"] == done and not fake.on(SUBJ_ERROR)
+    assert svc.results["runN"] == done and not fake.on(EVT_ERROR)
 
 
 async def test_multi_motor_missing_column_holds_frames(stub_score):
@@ -860,4 +876,4 @@ async def test_multi_motor_missing_column_holds_frames(stub_score):
     svc = _service(fake, tiled, drain_settle_s=0.05)
     await svc._handle_bind(_bind("runM"), None)
     await svc._handle_stop({"run_uid": "runM", "exit_status": "abort"}, None)
-    assert not fake.on(SUBJ_FRAME) and not fake.on(SUBJ_ERROR)
+    assert not fake.on(EVT_FRAME) and not fake.on(EVT_ERROR)

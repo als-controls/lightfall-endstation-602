@@ -1,11 +1,13 @@
 """E2E: RunEngine + sim devices -> TiledWriter -> in-memory Tiled; service over a real nats-server.
 
+Lightfall's side is a private session (``svc_session.SvcSession``): bind/stop are rpcs and
+the frame/complete/error events arrive on that session only.
+
 Full 2048x2048 frames: QERLIN's line finder rejects broad (defocused) lines on
 512x512 frames (see the Task 4 report), so smaller frames would not exercise
 the real fit. Scoring is ~1 s per frame on CPU, hence the generous timeout.
 """
 import asyncio
-import json
 import queue
 import shutil
 import socket
@@ -16,7 +18,6 @@ import time
 from pathlib import Path
 
 import bluesky.plans as bp
-import nats as natslib
 import pytest
 from bluesky import RunEngine
 from bluesky_tiled_plugins import TiledWriter
@@ -32,13 +33,14 @@ from tiled.server.app import build_app
 from rixs_live.config import AppConfig
 from rixs_live.contract import (
     CONTRACT_VERSION,
-    SUBJ_BIND,
-    SUBJ_COMPLETE,
-    SUBJ_ERROR,
-    SUBJ_FRAME,
-    SUBJ_STOP,
+    EVT_COMPLETE,
+    EVT_ERROR,
+    EVT_FRAME,
+    RPC_BIND,
+    RPC_STOP,
 )
 from rixs_live.service import RixsLiveService
+from svc_session import SvcSession
 
 BEST = 104.0  # hidden best SM3 pitch (native units), fixed via an explicit FocusModel
 FRAME_SHAPE = (2048, 2048)
@@ -54,6 +56,18 @@ def _nats_binary():
 
 
 pytestmark = pytest.mark.skipif(_nats_binary() is None, reason="nats-server not found")
+
+
+async def start_service(svc):
+    """What RixsLiveService._main does before it idles: connect, then serve."""
+    await svc._nats.connect()
+    await svc._host.start(svc._nats.core)
+    svc._host.set_state(state="ready")
+
+
+async def stop_service(svc):
+    await svc._host.stop()
+    await svc._nats.close()
 
 
 def _free_port():
@@ -131,27 +145,25 @@ class QueuedWriter:
         self._thread.join(timeout=60)
 
 
-def _run_scan(writer_client, loop, nc, timings, async_writer=False):
-    """Blocking: run the scan in this (worker) thread; publish bind/stop over NATS."""
+def _run_scan(writer_client, loop, session, timings, async_writer=False):
+    """Blocking: run the scan in this (worker) thread; bind/stop are session rpcs."""
     tw = TiledWriter(writer_client, batch_size=1)
     if async_writer:
         tw = QueuedWriter(tw)
     RE = RunEngine({}, context_managers=[])  # not the main thread: no signal handlers
 
-    def publish(subject, payload):
-        fut = asyncio.run_coroutine_threadsafe(
-            nc.publish(subject, json.dumps(payload).encode()), loop)
-        fut.result(timeout=5)
+    def publish(action, payload):
+        fut = asyncio.run_coroutine_threadsafe(session.call(action, payload), loop)
+        reply = fut.result(timeout=10)
+        assert reply.get("status") == "ok" and reply.get("accepted"), reply
 
     def binder(name, doc):  # subscribed after the writer: the doc is already in Tiled
         if name == "start":
-            publish(SUBJ_BIND, {"run_uid": doc["uid"], "tiled_url": "http://in-memory",
-                                "lightfall_prefix": "als.7011",
-                                "tiled_proxy": None,
-                                "contract_version": CONTRACT_VERSION})
+            publish(RPC_BIND, {"run_uid": doc["uid"], "tiled_url": "http://in-memory",
+                               "tiled_proxy": None, "contract_version": CONTRACT_VERSION})
         elif name == "stop":
             timings["scan_done"] = time.monotonic()
-            publish(SUBJ_STOP, {"run_uid": doc["run_start"]})
+            publish(RPC_STOP, {"run_uid": doc["run_start"]})
 
     if async_writer:
         RE.subscribe(binder)  # worst case: bind/stop go out before the writer sees the doc
@@ -177,37 +189,39 @@ async def _smoke(nats_url, tiled_app, async_writer):
                         tiled={"url": "http://in-memory", "api_key": "k"})
         cfg.nats.url = nats_url
         svc = RixsLiveService(cfg, tiled_connect=lambda url, key, proxy=None: svc_client)
-        await svc._nats.connect()
-        await svc._register_subscriptions()
-
-        nc = await natslib.connect(nats_url)
-        events = {"frame": [], "complete": [], "error": []}
-
-        def collector(key):
-            async def cb(msg):
-                events[key].append(json.loads(msg.data))
-            return cb
-
-        await nc.subscribe(SUBJ_FRAME, cb=collector("frame"))
-        await nc.subscribe(SUBJ_COMPLETE, cb=collector("complete"))
-        await nc.subscribe(SUBJ_ERROR, cb=collector("error"))
-        await nc.flush()
+        await start_service(svc)
+        session = SvcSession(nats_url, svc.scope)
+        info = await session.start()
+        assert info["name"] == "rixs-live" and info["summary"]["dispersion_mev_per_px"] == 2.5
+        # A second connection that never opened a session sees none of the run's events.
+        bystander = SvcSession(nats_url, svc.scope, app_name="bystander")
 
         loop = asyncio.get_running_loop()
         timings = {"t0": time.monotonic()}
-        uid = await loop.run_in_executor(None, _run_scan, writer_client, loop, nc, timings,
-                                         async_writer)
+        uid = await loop.run_in_executor(None, _run_scan, writer_client, loop, session,
+                                         timings, async_writer)
 
         deadline = time.monotonic() + COMPLETE_TIMEOUT_S
-        while time.monotonic() < deadline and not events["complete"] and not events["error"]:
+        while (time.monotonic() < deadline and not session.on(EVT_COMPLETE)
+               and not session.on(EVT_ERROR)):
             await asyncio.sleep(0.1)
         timings["complete"] = time.monotonic()
-        await nc.drain()
-        await svc._nats.close()
+        with pytest.raises(PermissionError):  # an untrusted app is refused a session
+            await bystander.start()
+        assert bystander.events == []
+        await bystander.close()
+        result = await session.call("result.get", {"run_uid": uid})
+        events = {"frame": session.on(EVT_FRAME), "complete": session.on(EVT_COMPLETE),
+                  "error": session.on(EVT_ERROR)}
+        await session.close()
+        await stop_service(svc)
 
     assert not events["error"], events["error"]
-    assert events["complete"], f"no {SUBJ_COMPLETE} within {COMPLETE_TIMEOUT_S} s"
+    assert events["complete"], f"no {EVT_COMPLETE} within {COMPLETE_TIMEOUT_S} s"
     done = events["complete"][0]
+    assert result["status"] == "ok"
+    assert {k: v for k, v in result["result"].items()} == {
+        k: v for k, v in done.items() if k not in ("instance_id", "seq")}
     assert done["run_uid"] == uid and done["motor_field"] == "sm3_pitch"
     assert [f["seq_num"] for f in events["frame"]] == [1, 2, 3, 4, 5, 6, 7]
     assert done["fit"]["ok"], done["fit"]

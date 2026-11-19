@@ -17,7 +17,9 @@ def main() -> None:
 
 @main.command()
 @click.option("--nats-url", default=None, help="NATS broker URL")
-@click.option("--lightfall-prefix", default=None, help="Lightfall topic prefix (auth subject)")
+@click.option("--lightfall-prefix", default=None,
+              help="Lightfall's ipc_topic_prefix, e.g. als.602: the service scope "
+                   "(als.602.svc.rixs-live) and Lightfall's auth subject")
 @click.option("--dispersion", type=float, default=None,
               help="Spectrometer dispersion in meV/px (0 = unknown)")
 @click.option("--tiled-url", default=None,

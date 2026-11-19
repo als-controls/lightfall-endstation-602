@@ -1,4 +1,4 @@
-"""Publishes rixs.run.bind/stop on RunEngine start/stop (stxm binder shape)."""
+"""Sends the run.bind/run.stop rpcs to rixs-live on RunEngine start/stop."""
 from __future__ import annotations
 
 from typing import Callable
@@ -16,8 +16,8 @@ def _default_run_engine():
 def _default_credentials():
     """``(tiled_url, None, None)``: the URL is not secret; the API key is never read.
 
-    The service gets Tiled credentials from its own private auth handshake, because
-    ``rixs.run.bind`` is a public subject.
+    The service gets Tiled credentials from its own auth handshake with Lightfall
+    (approved by the user), never from whoever binds a run.
     """
     tiled_url = ""
     try:
@@ -49,37 +49,17 @@ def _default_proxy(tiled_url: str) -> str | None:
     return proxy if isinstance(proxy, str) and proxy else None
 
 
-def _lightfall_default_prefix() -> str:
-    """Lightfall's own default topic prefix (the fallback must agree with it)."""
-    try:
-        from lightfall.ipc.defaults import DEFAULT_IPC_TOPIC_PREFIX
-        return DEFAULT_IPC_TOPIC_PREFIX
-    except Exception:
-        return "als.7011"
-
-
-def _default_prefix():
-    fallback = _lightfall_default_prefix()
-    try:
-        from lightfall.ui.preferences.manager import PreferencesManager
-        return PreferencesManager.get_instance().get("ipc_topic_prefix", fallback)
-    except Exception:
-        return fallback
-
-
 class RixsRunBinder:
     def __init__(
         self,
         client,
         run_engine_getter: Callable = _default_run_engine,
         credentials_getter: Callable = _default_credentials,
-        prefix_getter: Callable = _default_prefix,
         proxy_getter: Callable[[str], str | None] = _default_proxy,
     ) -> None:
         self._client = client
         self._get_re = run_engine_getter
         self._get_creds = credentials_getter
-        self._get_prefix = prefix_getter
         self._get_proxy = proxy_getter
         self._token = None
         self._re = None
@@ -137,9 +117,7 @@ class RixsRunBinder:
                 except Exception as ex:
                     logger.debug(f"tiled proxy lookup failed: {ex!r}")
                     proxy = None
-                self._client.bind_run(
-                    uid, tiled_url=tiled_url,
-                    lightfall_prefix=self._get_prefix(), tiled_proxy=proxy)
+                self._client.bind_run(uid, tiled_url=tiled_url, tiled_proxy=proxy)
                 self._bound_uid = uid
                 self._client.last_bound_uid = uid
             elif name == "stop":

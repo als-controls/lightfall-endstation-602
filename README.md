@@ -62,6 +62,28 @@ Tests: `../../lightfall/.venv/Scripts/python -m pytest` in `plugin/`;
   `qerlin_optimization`, `autonomous_experiment` and `plan_review` skills and
   Lightfall's `autonomous_experiment` (tsuchinoko) tools.
 
+## How Lightfall and rixs-live talk (NATS)
+
+rixs-live is an IPC-services `ServiceHost`: service `rixs-live` under the scope of
+Lightfall's `ipc_topic_prefix` (pass the same value as `--lightfall-prefix`). With
+the prefix `als.602` its only public subjects are `als.602.svc.rixs-live.meta.info`,
+its heartbeat and `als.602.svc.discover`, all under the `als` root that bcgnats'
+auth callout allows. The plugin registers it with Lightfall's ServiceManager as an
+external service (`service_plugin.py`), which keeps a private session open:
+
+- `run.bind` / `run.stop` / `result.get` are rpcs on that session;
+- each run's `zeroth.frame`, `zeroth.complete`, `status` and `error` events are
+  delivered to the session that bound it and nowhere else;
+- the panel's health indicator follows the service heartbeat (`up`/`down`).
+
+The Tiled API key never travels with a bind. rixs-live asks Lightfall for it through
+Lightfall's own trust handshake (`{prefix}.meta.actions` -> `auth.request`), which the
+user approves. Sessions are accepted from `app_name` "lightfall" only. That name is
+self-reported, so it keeps other well-behaved clients out; the broker's per-connection
+permissions are what isolate the private subjects. The service-host code is vendored
+from lightfall-utils as `rixs_live/svc/` (lightfall-utils' IPC package imports PySide6);
+`tests/test_svc_vendored.py` checks that it differs from upstream only in import lines.
+
 ## Real Marana: frames over PVA
 
 The simulated Marana stores its frames in Tiled, and rixs-live reads them from
@@ -81,7 +103,7 @@ Tiled**, where scalar columns land live.
   blocking callbacks, so the frame is posted before the acquisition completes.
   rixs-live keeps the last `pva.buffer_frames` frames per channel and pairs each
   row with the frame whose `uniqueId` matches its counter.
-- A row whose frame never arrives fails the run loudly on `rixs.error` after
+- A row whose frame never arrives fails the run loudly with an `error` event after
   `pva.frame_timeout_s` (default 20 s). The message names the channel, its
   connection state and the buffered ids. A frame stamped well before the run
   started (the counter reset after an IOC restart) is treated as not received.
@@ -129,14 +151,9 @@ Two scripts live outside git under
 
 2. `smoke_nats.py` starts a real `nats-server` on a free port, then
    `rixs-live/.venv/Scripts/rixs-live.exe run --nats-url nats://127.0.0.1:<port> --dispersion 2.5 --lightfall-prefix als.602`,
-   and makes one `_rixs.discover` request with nats-py:
-
-   ```
-   {"app_name": "rixs-live", "app_version": "",
-    "actions": ["rixs.zeroth.result"],
-    "events": ["rixs.status", "rixs.error", "rixs.zeroth.frame", "rixs.zeroth.complete"],
-    "dispersion_mev_per_px": 2.5}
-   ```
+   and requests `als.602.svc.rixs-live.meta.info` with nats-py. The reply's
+   `summary` is `{"app_name": "rixs-live", "dispersion_mev_per_px": 2.5,
+   "rixs_contract_version": 2}`, with `"state": "ready"`.
 
    Both processes are terminated at the end.
 
@@ -150,9 +167,11 @@ Two scripts live outside git under
    `ipc_topic_prefix` (Preferences; default `als.7011`, use whatever your
    Lightfall shows) and the spectrometer dispersion in meV/px:
    `rixs-live/.venv/Scripts/rixs-live run --nats-url nats://127.0.0.1:4222 --lightfall-prefix <ipc_topic_prefix> --dispersion 2.5`
+   The prefix must be Lightfall's: Lightfall looks for the service at
+   `<ipc_topic_prefix>.svc.rixs-live`.
    Tiled is whatever Lightfall is configured for: the plugin sends only the Tiled
-   URL in `rixs.run.bind`. The API key never travels on that public subject; the
-   service gets it from the private auth handshake with Lightfall. On a local
+   URL in `run.bind`. The API key never travels with it; the service gets it
+   from the private auth handshake with Lightfall. On a local
    broker without the auth callout, pass `--tiled-api-key <key>` (or set
    `RIXS_LIVE_TILED_API_KEY`), and `--tiled-url` if needed; pass nothing for a
    Tiled that allows anonymous reads.
@@ -161,8 +180,8 @@ Two scripts live outside git under
    `socks5://localhost:1080` for `*.lbl.gov`), and the service connects through
    it. When the bind carries no proxy, `ALL_PROXY` / `HTTPS_PROXY` in the
    service's environment are still honoured (socksio is installed for SOCKS). If
-   the service cannot reach Tiled, the panel's status line shows the `rixs.error`
-   text, which names the Tiled URL and the proxy used (or "no proxy").
+   the service cannot reach Tiled, the panel's status line shows the `error`
+   event's text, which names the Tiled URL and the proxy used (or "no proxy").
    The service reconnects to NATS on its own after a broker restart; if the
    connection is ever closed for good it exits with status 1 so a supervisor
    can restart it.
@@ -185,15 +204,15 @@ Two scripts live outside git under
 4. **Panel.** Open the "QERLIN Focus" panel (Analysis). Its title-bar toggle
    is on by default; the status line should read "bound: waiting for a
    qerlin_focus_scan run" once the RunEngine is up. The right-hand health
-   indicator checks rixs-live every ~10 s (off the GUI thread): "service: not
-   responding" means discovery got no answer, and a scan started meanwhile reads
+   indicator follows the service heartbeat: "service: not responding" means
+   Lightfall's session to rixs-live is down, and a scan started meanwhile reads
    "run <uid> not analysed: rixs-live not responding". `rixs_service_status`
    reports the same state.
 5. **Plan from the UI.** Run `qerlin_focus_scan` once (devices marana, motor
    = `sm3_pitch`, mono; defaults 98..116, 19 points). The left plot fills with
    FWHM vs position, its x axis labelled with the motor name and units from the
    service (`sm3_pitch`, or `sample_x (mm)`), the right shows the zeroth-order
-   preview with its fitted line, and on `rixs.zeroth.complete` the fitted
+   preview with its fitted line, and on the `zeroth.complete` event the fitted
    parabola and a vertical line at the optimum appear. Then scan `sample_x`,
    e.g. -0.92..-0.80 mm in 13 points.
 6. **Agent.** Open the "qerlin" agent in the assistant panel and ask it to

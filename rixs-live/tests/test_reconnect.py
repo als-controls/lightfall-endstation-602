@@ -12,7 +12,6 @@ import nats as natslib
 import pytest
 
 from rixs_live.config import AppConfig, NatsConfig
-from rixs_live.contract import SUBJ_DISCOVER
 from rixs_live.nats_client import NatsClient
 from rixs_live.service import RixsLiveService
 
@@ -50,8 +49,11 @@ def _stop_broker(proc):
     proc.wait(timeout=5)
 
 
+META_INFO = "als.7011.svc.rixs-live.meta.info"  # default scope = default lightfall_prefix
+
+
 async def _discover(url, deadline_s):
-    """Ask _rixs.discover until it answers or ``deadline_s`` passes; returns the reply."""
+    """Ask the service's meta.info until it answers or ``deadline_s`` passes."""
     loop = asyncio.get_running_loop()
     deadline = loop.time() + deadline_s
     last = None
@@ -63,14 +65,14 @@ async def _discover(url, deadline_s):
             await asyncio.sleep(0.2)
             continue
         try:
-            msg = await nc.request(SUBJ_DISCOVER, b"{}", timeout=1)
+            msg = await nc.request(META_INFO, b"{}", timeout=1)
             return json.loads(msg.data)
         except Exception as ex:  # no responders until the service has reconnected
             last = ex
             await asyncio.sleep(0.2)
         finally:
             await nc.close()
-    raise AssertionError(f"_rixs.discover did not answer within {deadline_s} s: {last!r}")
+    raise AssertionError(f"meta.info did not answer within {deadline_s} s: {last!r}")
 
 
 @pytest.mark.skipif(_nats_binary() is None, reason="nats-server not found")
@@ -87,12 +89,14 @@ def test_discover_answers_after_broker_restart():
         svc = RixsLiveService(cfg)
         main = asyncio.get_running_loop().create_task(svc._main())
         try:
-            assert (await _discover(url, 10.0))["app_name"] == "rixs-live"
+            first = await _discover(url, 10.0)
+            assert first["name"] == "rixs-live" and first["state"] == "ready"
             _stop_broker(broker)
             await asyncio.sleep(0.5)  # the service notices the disconnect
             assert not main.done()
             broker = _start_broker(port)  # same port, fresh server (no state kept)
-            assert (await _discover(url, 10.0))["app_name"] == "rixs-live"
+            again = await _discover(url, 10.0)
+            assert again["instance_id"] == first["instance_id"]  # same process
             assert not main.done()  # never exited, never needed a manual restart
         finally:
             main.cancel()
@@ -102,6 +106,20 @@ def test_discover_answers_after_broker_restart():
                 _stop_broker(broker)
 
     asyncio.run(scenario())
+
+
+class _FakeHost:
+    def __init__(self):
+        self.started_on = "never"
+        self.stopped = False
+
+    async def start(self, core):
+        self.started_on = core
+
+    def set_state(self, state=None, summary=None): ...
+
+    async def stop(self):
+        self.stopped = True
 
 
 class _ClosingNats:
@@ -118,24 +136,26 @@ class _ClosingNats:
         self.polls += 1
         return self.polls > 1
 
+    core = None
+
     async def connect(self): ...
     async def authenticate(self): return None
-    async def subscribe(self, subject, cb): ...
 
     async def close(self):
         self.closed_calls += 1
 
 
 async def test_closed_connection_exits_non_zero():
-    fake = _ClosingNats()
-    svc = RixsLiveService(AppConfig(), nats_client=fake)
+    fake, host = _ClosingNats(), _FakeHost()
+    svc = RixsLiveService(AppConfig(), nats_client=fake, host=host)
     assert await asyncio.wait_for(svc._main(), 5) == 1
     assert fake.closed_calls == 1
+    assert host.started_on is None and host.stopped  # started on the client's core
     assert fake.on_reconnected == svc._on_reconnected
 
 
 def test_main_raises_system_exit_on_closed(monkeypatch):
-    svc = RixsLiveService(AppConfig(), nats_client=_ClosingNats())
+    svc = RixsLiveService(AppConfig(), nats_client=_ClosingNats(), host=_FakeHost())
     with pytest.raises(SystemExit) as info:
         svc.main()
     assert info.value.code == 1
@@ -156,6 +176,7 @@ async def test_nats_client_reconnects_forever_and_tracks_closed(monkeypatch):
     client = NatsClient(NatsConfig(url="nats://x:1"))
     await client.connect()
     assert seen["max_reconnect_attempts"] == -1
+    assert client.core is not None and client.core._nc is not None  # the host's view
     for cb in ("disconnected_cb", "reconnected_cb", "closed_cb", "error_cb"):
         assert callable(seen[cb]), cb
 
@@ -179,7 +200,7 @@ async def test_reconnect_reruns_auth():
         async def authenticate(self):
             calls.append(1)
 
-    svc = RixsLiveService(AppConfig(), nats_client=Fake())
+    svc = RixsLiveService(AppConfig(), nats_client=Fake(), host=_FakeHost())
     await svc._on_reconnected()
     await asyncio.sleep(0.05)
     assert calls == [1]

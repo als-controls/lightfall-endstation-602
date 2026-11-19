@@ -67,7 +67,7 @@ class QerlinFocusPanel(BasePanel):
         self._client = client
         self._binder = binder
         self._run_uid: str | None = None
-        self._pending_uid: str | None = None  # bound, no rixs.zeroth.complete yet
+        self._pending_uid: str | None = None  # bound, no zeroth.complete event yet
         self._down_text: str | None = None  # status text we set for a down service
         self._xs: list[float] = []
         self._ys: list[float] = []
@@ -91,7 +91,7 @@ class QerlinFocusPanel(BasePanel):
         self._binder_listener = self._on_binder_changed
         self._binder.add_listener(self._binder_listener)
         self._retry_enable()
-        # discover() every ~10 s in a worker; results land on the GUI thread.
+        # Health follows rixs-live's heartbeat (the service client's state).
         self._client.start_health_monitor()
         if self._client.service_up is False:
             self._on_health(False)
@@ -214,12 +214,14 @@ class QerlinFocusPanel(BasePanel):
         self._down_text = None
 
     def _on_bind_sent(self, run_uid: str) -> None:
-        """A rixs.run.bind went out (queued here from the RunEngine thread)."""
+        """A run.bind rpc went out (queued here from the RunEngine thread).
+
+        A bind the service refuses or never answers comes back as an error event;
+        a bind to a service already known to be down is reported right here.
+        """
         self._pending_uid = run_uid or None
         if self._client.service_up is False:
             self._show_down()
-        # The publish has no ack: re-check now so a lost bind shows up at once.
-        self._client.check_health_async()
 
     # -- events ---------------------------------------------------------------
     def _set_axis_label(self, field: str, units: str) -> None:

@@ -5,6 +5,8 @@ from lightfall.plugins import PluginEntry, PluginManifest
 manifest = PluginManifest(
     name="lightfall-endstation-602",
     plugins=[
+        PluginEntry("service", "rixs-live",
+                    "lightfall_endstation_602.service_plugin:RixsLiveServicePlugin"),
         PluginEntry("device_backend", "qerlin_sim",
                     "lightfall_endstation_602.backend:QerlinSimBackendPlugin"),
         PluginEntry("plan", "qerlin_focus_scan",

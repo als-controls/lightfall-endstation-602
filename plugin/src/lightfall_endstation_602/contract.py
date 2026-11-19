@@ -2,19 +2,28 @@
 
 from __future__ import annotations
 
-CONTRACT_VERSION = 2  # 2: rixs.run.bind carries tiled_proxy (str | None)
+CONTRACT_VERSION = 2  # the rixs start-doc block and the run.bind payload
 MD_KEY = "rixs"
 KIND_ZEROTH = "zeroth_order_focus"
-SUBJ_BIND, SUBJ_STOP = "rixs.run.bind", "rixs.run.stop"
-# bind: {run_uid, tiled_url, tiled_proxy, lightfall_prefix, contract_version};
-# tiled_proxy is the proxy Lightfall itself uses for tiled_url (e.g.
-# "socks5://localhost:1080") or None. Never an API key: the subject is public.
-SUBJ_STATUS, SUBJ_ERROR = "rixs.status", "rixs.error"
-SUBJ_FRAME, SUBJ_COMPLETE = "rixs.zeroth.frame", "rixs.zeroth.complete"
-# request/reply: {"run_uid"} -> complete payload | {"error"}
-SUBJ_RESULT = "rixs.zeroth.result"
-SUBJ_DISCOVER = "_rixs.discover"
-# Frame payload geometry (SUBJ_FRAME): ``centroid`` is [x, y] in full-resolution
+# rixs-live is a ServiceHost (the IPC services pattern, see Lightfall's NATS use model):
+# service "rixs-live" under the scope of Lightfall's ipc_topic_prefix (e.g. "als.602"), so
+# its only public subjects are als.602.svc.rixs-live.meta.info / .heartbeat and
+# als.602.svc.discover. Commands are rpcs on the private session; results are per-session
+# events delivered to the session that bound the run, nowhere else.
+SERVICE_NAME = "rixs-live"
+SERVICE_CONTRACT = "1.0"  # rpcs + events below (major must match, minor >= client's)
+RPC_BIND, RPC_STOP, RPC_RESULT = "run.bind", "run.stop", "result.get"
+# run.bind: {run_uid, tiled_url, tiled_proxy, contract_version} -> {"accepted": true};
+#   tiled_proxy is the proxy Lightfall itself uses for tiled_url (e.g.
+#   "socks5://localhost:1080") or None. The analysis runs in the background.
+#   The Tiled API key is not sent: rixs-live gets it from Lightfall's own trust
+#   handshake (auth.request), which the user approves.
+# run.stop: {run_uid, exit_status?, num_events?} -> {"accepted": true}
+# result.get: {run_uid} -> {"result": <complete payload> | None} while finished or
+#   unknown, or {"pending": true, run_uid, frames_done, total} while bound or draining.
+EVT_STATUS, EVT_ERROR = "status", "error"
+EVT_FRAME, EVT_COMPLETE = "zeroth.frame", "zeroth.complete"
+# Frame payload geometry (EVT_FRAME): ``centroid`` is [x, y] in full-resolution
 # detector pixels with x = column and y = row (row 0 = first row of the frame).
 # ``angle_deg`` is the line direction measured from +x toward +y in those image
 # coordinates, i.e. the direction vector is (cos, sin) in (column, row); a

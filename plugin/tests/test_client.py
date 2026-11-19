@@ -1,32 +1,42 @@
+import pytest
+
 from lightfall_endstation_602 import contract as c
 from lightfall_endstation_602.client import RixsServiceClient
 
 
-def test_bind_payload(fake_ipc):
-    cl = RixsServiceClient(ipc=fake_ipc)
-    cl.bind_run("u1", tiled_url="http://t", lightfall_prefix="als.602")
-    assert fake_ipc.published == [(c.SUBJ_BIND, {
-        "run_uid": "u1", "tiled_url": "http://t", "tiled_proxy": None,
-        "lightfall_prefix": "als.602", "contract_version": c.CONTRACT_VERSION})]
+def test_bind_is_a_run_bind_rpc_without_any_key(fake_svc):
+    cl = RixsServiceClient(service=fake_svc)
+    cl.bind_run("u1", tiled_url="http://t", tiled_proxy="socks5://p:1080")
+    assert fake_svc.calls == [(c.RPC_BIND, {
+        "run_uid": "u1", "tiled_url": "http://t", "tiled_proxy": "socks5://p:1080",
+        "contract_version": c.CONTRACT_VERSION})]
 
 
-def test_run_stop(fake_ipc):
-    RixsServiceClient(ipc=fake_ipc).run_stop("u1")
-    assert fake_ipc.published == [(c.SUBJ_STOP, {"run_uid": "u1"})]
+def test_run_stop_rpc(fake_svc):
+    RixsServiceClient(service=fake_svc).run_stop(
+        "u1", exit_status="success", num_events={"primary": 3})
+    assert fake_svc.calls == [(c.RPC_STOP, {"run_uid": "u1", "exit_status": "success",
+                                            "num_events": {"primary": 3}})]
 
 
-def test_signals_emit(fake_ipc, qtbot):
-    cl = RixsServiceClient(ipc=fake_ipc)
+def test_watches_the_session_events(fake_svc):
+    RixsServiceClient(service=fake_svc)
+    assert fake_svc.watched == {c.EVT_FRAME, c.EVT_COMPLETE, c.EVT_STATUS, c.EVT_ERROR}
+
+
+def test_signals_emit(fake_svc, qtbot):
+    cl = RixsServiceClient(service=fake_svc)
     got = {}
     cl.frameScored.connect(lambda d: got.setdefault("frame", d))
     cl.scanComplete.connect(lambda d: got.setdefault("done", d))
     cl.statusChanged.connect(lambda d: got.setdefault("status", d))
     cl.errorReceived.connect(lambda d: got.setdefault("err", d))
     assert cl.last_complete is None
-    fake_ipc.emit(c.SUBJ_FRAME, {"seq": 1})
-    fake_ipc.emit(c.SUBJ_COMPLETE, {"run_uid": "u", "best": 3})
-    fake_ipc.emit(c.SUBJ_STATUS, {"state": "x"})
-    fake_ipc.emit(c.SUBJ_ERROR, {"error": "e"})
+    fake_svc.emit(c.EVT_FRAME, {"seq": 1})
+    fake_svc.emit(c.EVT_COMPLETE, {"run_uid": "u", "best": 3})
+    fake_svc.emit(c.EVT_STATUS, {"state": "x"})
+    fake_svc.emit(c.EVT_ERROR, {"error": "e"})
+    fake_svc.emit("something.else", {"ignored": True})
     assert got["frame"]["seq"] == 1
     assert got["done"]["best"] == 3
     assert cl.last_complete == {"run_uid": "u", "best": 3}
@@ -34,84 +44,112 @@ def test_signals_emit(fake_ipc, qtbot):
     assert got["err"]["error"] == "e"
 
 
-def test_discover(fake_ipc):
-    fake_ipc.replies[c.SUBJ_DISCOVER] = {"app_name": "rixs-live"}
-    assert RixsServiceClient(ipc=fake_ipc).discover()["app_name"] == "rixs-live"
-
-
-def test_discover_exception_returns_none(fake_ipc):
-    fake_ipc.request_exc = RuntimeError("x")
-    assert RixsServiceClient(ipc=fake_ipc).discover() is None
-
-
-def test_get_result_ok(fake_ipc):
-    fake_ipc.replies[c.SUBJ_RESULT] = {"run_uid": "u", "best": 2}
-    r = RixsServiceClient(ipc=fake_ipc).get_result("u")
-    assert r == {"run_uid": "u", "best": 2}
-    assert fake_ipc.requests == [(c.SUBJ_RESULT, {"run_uid": "u"})]
-
-
-def test_get_result_pending_passthrough(fake_ipc):
-    pending = {"pending": True, "run_uid": "u", "frames_done": 3, "total": 7}
-    fake_ipc.replies[c.SUBJ_RESULT] = pending
-    cl = RixsServiceClient(ipc=fake_ipc)
-    assert cl.last_bound_uid is None
-    r = cl.get_result("u")
-    assert r == pending and r.get("pending") is True
-
-
-def test_get_result_timeout_returns_none(fake_ipc):
-    fake_ipc.request_exc = TimeoutError()
-    assert RixsServiceClient(ipc=fake_ipc).get_result("u") is None
-
-
-def test_get_result_error_reply_returns_none(fake_ipc):
-    fake_ipc.replies[c.SUBJ_RESULT] = {"error": "unknown run"}
-    assert RixsServiceClient(ipc=fake_ipc).get_result("u") is None
-
-
-def test_no_ipc_is_safe():
-    cl = RixsServiceClient(ipc=None)
-    cl._ipc = None
-    cl.bind_run("u")
-    cl.run_stop("u")
-    assert cl.discover() is None
-    assert cl.get_result("u") is None
-
-
-def test_record_health_emits_only_on_change(fake_ipc, qtbot):
-    cl = RixsServiceClient(ipc=fake_ipc)
+def test_health_follows_the_heartbeat(fake_svc, qtbot):
+    cl = RixsServiceClient(service=fake_svc)  # fake starts "down"
     seen = []
     cl.healthChanged.connect(seen.append)
-    assert cl.service_up is None
-    cl.record_health({"app_name": "rixs-live"})
-    cl.record_health({"app_name": "rixs-live"})
-    cl.record_health(None)
+    assert cl.service_up is False and cl.discover() is None
+    fake_svc.set_health("up", {"app_name": "rixs-live", "dispersion_mev_per_px": 2.5})
+    assert cl.service_up is True
+    assert cl.discover() == {"app_name": "rixs-live", "app_version": "0.0",
+                             "dispersion_mev_per_px": 2.5}
+    fake_svc.set_health("degraded")
+    fake_svc.set_health("down")
     assert seen == [True, False]
     assert cl.service_up is False and cl.service_info is None
-    assert cl.health_checked_at is not None
 
 
-def test_check_health_async_runs_discover_off_gui_thread(fake_ipc, qtbot):
-    import threading
-    threads = []
+def test_unknown_state_leaves_health_unknown():
+    from conftest import FakeService
 
-    class IPC(type(fake_ipc)):
-        def request(self, subject, data, timeout_ms=1000):
-            threads.append(threading.get_ident())
-            return {"app_name": "rixs-live"}
-
-    cl = RixsServiceClient(ipc=IPC())
-    cl.start_health_monitor(interval_ms=60_000)
-    cl.start_health_monitor()  # idempotent
-    qtbot.waitUntil(lambda: cl.service_up is True, timeout=3000)
-    assert threads and threads[0] != threading.get_ident()
-    assert cl.service_info == {"app_name": "rixs-live"}
-    cl.stop_health_monitor()
+    cl = RixsServiceClient(service=FakeService(health="unknown"))
+    assert cl.service_up is None
+    cl.check_health_async()
+    assert cl.service_up is None
 
 
-def test_bind_emits_bind_sent(fake_ipc, qtbot):
-    cl = RixsServiceClient(ipc=fake_ipc)
+def test_follows_the_manager_client_and_its_recreation(qtbot):
+    from conftest import FakeService, _Sig
+
+    class Manager:
+        def __init__(self):
+            self.client_created = _Sig()
+            self.clients = {}
+
+        def client(self, name):
+            return self.clients.get(name)
+
+    first = FakeService()
+    first.set_health("up")
+    manager = Manager()
+    manager.clients[c.SERVICE_NAME] = first
+    cl = RixsServiceClient(manager=manager)
+    assert cl.service_up is True
+    second = FakeService()  # e.g. after ServiceManager.restart("rixs-live")
+    manager.clients[c.SERVICE_NAME] = second
+    manager.client_created.emit("some-other-service")
+    assert cl._svc is first
+    manager.client_created.emit(c.SERVICE_NAME)
+    assert cl._svc is second and cl.service_up is False
+    cl.bind_run("u1")
+    assert second.calls and not first.calls
+
+
+def test_get_result_ok(up_svc):
+    up_svc.replies[c.RPC_RESULT] = {"status": "ok", "result": {"run_uid": "u", "best": 2},
+                                    "contract_version": "1.0"}
+    assert RixsServiceClient(service=up_svc).get_result("u") == {"run_uid": "u", "best": 2}
+    assert up_svc.calls == [(c.RPC_RESULT, {"run_uid": "u"})]
+
+
+def test_get_result_pending_passthrough(up_svc):
+    up_svc.replies[c.RPC_RESULT] = {"status": "ok", "pending": True, "run_uid": "u",
+                                    "frames_done": 3, "total": 7, "contract_version": "1.0"}
+    r = RixsServiceClient(service=up_svc).get_result("u")
+    assert r == {"pending": True, "run_uid": "u", "frames_done": 3, "total": 7}
+
+
+@pytest.mark.parametrize("reply", [
+    {"status": "ok", "result": None, "contract_version": "1.0"},  # unknown run
+    {"status": "error", "code": "timeout", "message": "x", "contract_version": "1.0"},
+    TimeoutError("late"),
+])
+def test_get_result_none_for_unknown_error_or_timeout(up_svc, reply):
+    up_svc.replies[c.RPC_RESULT] = reply
+    assert RixsServiceClient(service=up_svc).get_result("u") is None
+
+
+def test_no_service_client_is_safe(qtbot):
+    cl = RixsServiceClient(manager=None)
+    cl._manager = None
+    seen = []
+    cl.bindSent.connect(seen.append)
+    cl.bind_run("u1")  # logged, never raises
+    cl.run_stop("u1")
+    assert seen == ["u1"]
+    assert cl.get_result("u1") is None and cl.discover() is None
+
+
+def test_call_raising_is_safe(fake_svc):
+    fake_svc.call_exc = RuntimeError("QtServiceClient is not running")
+    cl = RixsServiceClient(service=fake_svc)
+    cl.bind_run("u1")
+    assert cl.get_result("u1") is None
+
+
+def test_failed_bind_reaches_error_signal(up_svc, qtbot):
+    up_svc.replies[c.RPC_BIND] = {"status": "error", "code": "unknown",
+                                  "message": "client still starting", "contract_version": "1.0"}
+    cl = RixsServiceClient(service=up_svc)
+    errors = []
+    cl.errorReceived.connect(errors.append)
+    cl.bind_run("u1")
+    qtbot.waitUntil(lambda: bool(errors), timeout=2000)
+    assert errors[0]["run_uid"] == "u1" and "client still starting" in errors[0]["error"]
+
+
+def test_bind_emits_bind_sent(fake_svc, qtbot):
+    cl = RixsServiceClient(service=fake_svc)
     seen = []
     cl.bindSent.connect(seen.append)
     cl.bind_run("u1")
@@ -120,10 +158,10 @@ def test_bind_emits_bind_sent(fake_ipc, qtbot):
 
 # -- per-frame score cache -----------------------------------------------------
 
-def test_frame_scores_cached_without_preview(fake_ipc, qtbot):
-    cl = RixsServiceClient(ipc=fake_ipc)
+def test_frame_scores_cached_without_preview(fake_svc, qtbot):
+    cl = RixsServiceClient(service=fake_svc)
     assert cl.get_score("u", 1) is None
-    fake_ipc.emit(c.SUBJ_FRAME, {"run_uid": "u", "seq_num": 1, "fwhm_px": 6.0,
+    fake_svc.emit(c.EVT_FRAME, {"run_uid": "u", "seq_num": 1, "fwhm_px": 6.0,
                                  "score_valid": True, "positions": {"a": 1.0},
                                  "preview": {"b64": "..."}, "centroid": [1, 2]})
     got = cl.get_score("u", 1)
@@ -134,8 +172,8 @@ def test_frame_scores_cached_without_preview(fake_ipc, qtbot):
     assert cl.get_score("u", 2) is None and cl.get_score("other", 1) is None
 
 
-def test_score_cache_ignores_malformed_and_is_bounded(fake_ipc, monkeypatch):
-    cl = RixsServiceClient(ipc=fake_ipc)
+def test_score_cache_ignores_malformed_and_is_bounded(fake_svc, monkeypatch):
+    cl = RixsServiceClient(service=fake_svc)
     for bad in (None, {}, {"run_uid": "u"}, {"run_uid": "", "seq_num": 1},
                 {"run_uid": "u", "seq_num": True}, {"run_uid": "u", "seq_num": "x"}):
         cl.record_score(bad)
@@ -151,11 +189,11 @@ def test_score_cache_ignores_malformed_and_is_bounded(fake_ipc, monkeypatch):
     assert not cl._scores
 
 
-def test_wait_score_timeout_and_wakeup(fake_ipc):
+def test_wait_score_timeout_and_wakeup(fake_svc):
     import threading
     import time
 
-    cl = RixsServiceClient(ipc=fake_ipc)
+    cl = RixsServiceClient(service=fake_svc)
     t0 = time.monotonic()
     assert cl.wait_score("u", 1, 0.05) is None
     assert time.monotonic() - t0 >= 0.04
@@ -168,11 +206,11 @@ def test_wait_score_timeout_and_wakeup(fake_ipc):
     assert cl.wait_score("u", 1, 0.0)["fwhm_px"] == 5.0  # already there: no wait
 
 
-def test_score_cache_thread_safety(fake_ipc):
-    """Concurrent writers (as from IPC) and readers (as from the RunEngine) agree."""
+def test_score_cache_thread_safety(fake_svc):
+    """Concurrent writers (as from the session) and readers (as from the RunEngine) agree."""
     import threading
 
-    cl = RixsServiceClient(ipc=fake_ipc)
+    cl = RixsServiceClient(service=fake_svc)
     n_writers, per = 4, 300
     errors = []
 
