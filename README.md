@@ -41,6 +41,9 @@ py -3.12 -m venv .venv
 
 Tests: `../../lightfall/.venv/Scripts/python -m pytest` in `plugin/`;
 `.venv/Scripts/python -m pytest` in `rixs-live/`.
+rixs-live's tests also import the plugin's simulator and contract from
+`../plugin/src` (set as `pythonpath` in its pytest config), so run them from this
+checkout; the plugin does not need to be installed in the service venv.
 
 ## What the plugin contributes
 
