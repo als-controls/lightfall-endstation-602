@@ -64,6 +64,16 @@ def test_hdf1_is_read_and_armed(monkeypatch):
     assert sigs.get("capture") == 1
 
 
+def test_hdf1_stages_create_directory_for_the_whole_tail(monkeypatch):
+    """<beamline>/marana01/%Y/%m/%d is 5 levels below /data: the IOC creates them."""
+    _set_beamline(monkeypatch, "6.0.2")
+    dev = _marana()
+    sigs = {getattr(k, "attr_name", k): v for k, v in dev.hdf1.stage_sigs.items()}
+    assert sigs.get("create_directory") == -5
+    tail = dev.hdf1.write_path_template.strip("/").split("/")[1:]  # drop "data"
+    assert len(tail) == -sigs["create_directory"]
+
+
 def test_frames_per_point_follows_num_images(monkeypatch):
     _set_beamline(monkeypatch, "6.0.2")
     dev = _marana()
