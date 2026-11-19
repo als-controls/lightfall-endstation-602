@@ -46,3 +46,6 @@ packages = ["src/rixs_live"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# Tests drive the plugin's simulator and contract (sim, contract, optimize; no
+# Lightfall imports) from the sibling checkout; the service never imports it.
+pythonpath = ["../plugin/src"]
