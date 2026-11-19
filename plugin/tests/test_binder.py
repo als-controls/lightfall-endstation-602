@@ -165,3 +165,30 @@ def test_default_proxy_uses_tiled_service_lookup(monkeypatch):
     assert bm._default_proxy("http://x.lbl.gov") is None
     del TiledService._get_proxy_url  # older Lightfall without the helper
     assert bm._default_proxy("http://x.lbl.gov") is None
+
+
+def test_binder_sends_lightfall_session_marker(fake_svc):
+    client = RixsServiceClient(service=fake_svc)
+    re = MagicMock()
+    b = RixsRunBinder(client, run_engine_getter=lambda: re,
+                      credentials_getter=lambda: ("http://t", None, None),
+                      proxy_getter=lambda url: None, session_getter=lambda: "sess1")
+    b.enable()
+    re.subscribe.call_args[0][0]("start", _start())
+    (call,) = [p for n, p in fake_svc.calls if n == c.RPC_BIND]
+    assert call["lightfall_session"] == "sess1"
+
+
+def test_binder_session_lookup_failure_still_binds(fake_svc):
+    client = RixsServiceClient(service=fake_svc)
+    re = MagicMock()
+
+    def boom():
+        raise RuntimeError("no session manager")
+    b = RixsRunBinder(client, run_engine_getter=lambda: re,
+                      credentials_getter=lambda: ("http://t", None, None),
+                      proxy_getter=lambda url: None, session_getter=boom)
+    b.enable()
+    re.subscribe.call_args[0][0]("start", _start())
+    (call,) = [p for n, p in fake_svc.calls if n == c.RPC_BIND]
+    assert "lightfall_session" not in call

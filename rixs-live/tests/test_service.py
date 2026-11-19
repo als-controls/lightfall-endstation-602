@@ -877,3 +877,59 @@ async def test_multi_motor_missing_column_holds_frames(stub_score):
     await svc._handle_bind(_bind("runM"), None)
     await svc._handle_stop({"run_uid": "runM", "exit_status": "abort"}, None)
     assert not fake.on(EVT_FRAME) and not fake.on(EVT_ERROR)
+
+
+class _AuthCountingNats(FakeNats):
+    """Each handshake hands out the key of the Lightfall session currently running."""
+
+    def __init__(self, key="k1"):
+        super().__init__()
+        self.key, self.auth_calls = key, 0
+
+    async def authenticate(self):
+        self.auth_calls += 1
+        self.tiled_credentials = {"tiled_url": "", "tiled_token": self.key}
+        return self.tiled_credentials
+
+
+async def test_bind_from_new_lightfall_session_reauthenticates():
+    fake = _AuthCountingNats()
+    keys = []
+    svc = RixsLiveService(AppConfig(bind_lookup_timeout_s=0.05), nats_client=fake,
+                          emit=fake.emit,
+                          tiled_connect=lambda url, key, proxy=None: keys.append(key) or FakeTiled())
+    await svc._handle_bind({**_bind("r1"), "lightfall_session": "s1"}, None)
+    await svc._handle_bind({**_bind("r2"), "lightfall_session": "s1"}, None)
+    assert fake.auth_calls == 1  # same session: cached key reused
+    fake.key = "k2"  # Lightfall restarted: old key revoked, new session, new key
+    await svc._handle_bind({**_bind("r3"), "lightfall_session": "s2"}, None)
+    assert fake.auth_calls == 2
+    assert keys == ["k1", "k1", "k2"]
+
+
+async def test_bind_without_session_marker_keeps_cached_key():
+    fake = _AuthCountingNats()
+    fake.tiled_credentials = {"tiled_url": "", "tiled_token": "old"}
+    keys = []
+    svc = RixsLiveService(AppConfig(bind_lookup_timeout_s=0.05), nats_client=fake,
+                          emit=fake.emit,
+                          tiled_connect=lambda url, key, proxy=None: keys.append(key) or FakeTiled())
+    await svc._handle_bind(_bind("r1"), None)
+    assert fake.auth_calls == 0 and keys == ["old"]
+
+
+async def test_failed_reauth_retries_on_next_bind():
+    fake = _AuthCountingNats()
+    ok = False
+
+    async def flaky():
+        fake.auth_calls += 1
+        return {"tiled_token": "k"} if ok else None
+    fake.authenticate = flaky
+    svc = RixsLiveService(AppConfig(bind_lookup_timeout_s=0.05), nats_client=fake,
+                          emit=fake.emit, tiled_connect=lambda *a, **k: FakeTiled())
+    await svc._handle_bind({**_bind("r1"), "lightfall_session": "s1"}, None)
+    ok = True
+    await svc._handle_bind({**_bind("r2"), "lightfall_session": "s1"}, None)
+    await svc._handle_bind({**_bind("r3"), "lightfall_session": "s1"}, None)
+    assert fake.auth_calls == 2
