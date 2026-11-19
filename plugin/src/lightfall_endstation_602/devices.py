@@ -66,10 +66,20 @@ class MaranaHDF5Plugin(HDF5Plugin, FileStoreHDF5IterativeWrite):
     * Warmup: the HDF5 plugin must see one array before it can capture (its dimensions
       come from that array). ADAndor3's ImageMode is ``Fixed``/``Continuous``, not the
       generic ``Single``, so ophyd's stock warmup would fail here.
+    * Directories: staging sets ``CreateDirectory`` so the IOC creates the missing tail
+      of the write path itself. ``<beamline>/marana01/%Y/%m/%d`` is 5 levels below
+      ``/data``, so a new day, or a new beamline directory, needs no manual mkdir and
+      doesn't depend on the IOC's own (non-autosaved) CreateDirectory value.
     """
 
     _WARMUP_TIMEOUT_S = 30.0
+    # Negative N: the IOC may create up to |N| missing trailing directories.
+    CREATE_DIRECTORY_DEPTH = -5
     path_semantics = "posix"
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.stage_sigs["create_directory"] = self.CREATE_DIRECTORY_DEPTH
 
     @FileStorePluginBase.reg_root.setter
     def reg_root(self, val):
