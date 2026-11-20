@@ -505,3 +505,24 @@ def test_status_errors_do_not_end_the_run(rig):
     docs, dt = _timed(qerlin_optimize(rig.cam, motors, None, timeout=0.3, poll_interval=0.01,
                                       status_interval=0.05, hooks=hooks))
     assert dt >= 0.3 and len(_events(docs, "primary")) == 1
+
+
+def test_marana_and_motors_are_staged_around_the_run(rig):
+    """Like bp.scan: the real Marana (SingleTrigger) refuses to trigger unless staged,
+    and staging arms its HDF1 file. Stage before open_run, unstage after close_run."""
+    motors = rig.motors[:2]
+    bridge = FakeBridge([{"targets": [[104.0, -0.8]]}])
+    msgs = []
+    RE = RunEngine({})
+    RE.msg_hook = msgs.append
+    RE(qerlin_optimize(rig.cam, motors, None, timeout=0.1, score_timeout=1.0,
+                       poll_interval=0.01, hooks=_hooks(bridge, FakeScores(motors))))
+    cmds = [(m.command, getattr(m.obj, "name", None)) for m in msgs
+            if m.command in ("stage", "unstage", "open_run", "close_run")]
+    i_open = cmds.index(("open_run", None))
+    i_close = cmds.index(("close_run", None))
+    staged = {n for c, n in cmds[:i_open] if c == "stage"}
+    unstaged = {n for c, n in cmds[i_close:] if c == "unstage"}
+    expected = {rig.cam.name, *(m.name for m in motors)}
+    assert expected <= staged
+    assert expected <= unstaged

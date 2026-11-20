@@ -264,7 +264,12 @@ def qerlin_optimize(marana, motors, mono=None, exposure_s: float = 1.0,
 
     bridge.subscribe(TARGETS_SUBJECT)
     end = _EndWatch(bridge, hooks.status, status_interval)
+    # Stage like bp.scan does: the real Marana (SingleTrigger) refuses to trigger
+    # unstaged, and staging is what arms HDF1 for the run's file. If the plan
+    # fails, the RunEngine unstages whatever is still staged.
+    staged = [marana, *motors]
     try:
+        yield from bps.stage_all(*staged)
         run_uid = yield from bps.open_run(md=_md)
         tiled_url, tiled_api_key, proxy_url = hooks.credentials()
         bridge.publish(BIND_SUBJECT, {
@@ -358,5 +363,6 @@ def qerlin_optimize(marana, motors, mono=None, exposure_s: float = 1.0,
             _emit(state, "status_changed", f"Experiment ended ({end.reason})")
             logger.info(f"qerlin_optimize: {end.reason}; closing the run")
         yield from bps.close_run()
+        yield from bps.unstage_all(*staged)
     finally:
         bridge.cleanup()
